@@ -93,6 +93,7 @@ jobs:
       - name: vcpkg
         shell: pwsh
         run: |
+          Set-Location engine
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install --triplet x64-windows
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" integrate install
       - name: Build virtual camera
