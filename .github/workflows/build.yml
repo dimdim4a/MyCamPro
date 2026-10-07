@@ -2,7 +2,7 @@ name: Build MyCam Pro
 
 on:
   push:
-    branches: [main]
+    branches: [main, prototype/p0-core]
   pull_request:
   workflow_dispatch:
 
