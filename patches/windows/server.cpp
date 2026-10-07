@@ -1,0 +1,140 @@
+#include "net/server.h"
+#include "logger.h"
+#include "adb.h"
+#include "net/serializer.h"
+#include <optional>
+
+Server::Server(int port, const ConnectionListener& connectionListener) : port(port), connectionListener(connectionListener), acceptor(context)
+{
+    try {
+        tcp::endpoint endpoint(tcp::v4(), port);
+        acceptor.open(endpoint.protocol());
+        acceptor.set_option(tcp::acceptor::reuse_address(true));
+        acceptor.bind(endpoint);
+        acceptor.listen(endpoint.port());
+        logger << "[SERVER] Initialized on port " << port << std::endl;
+        adb::reverse(port);
+        adb::forward(8554);
+    } catch(std::exception& e) {
+        logger << "[SERVER] CRITICAL INIT ERROR: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+Server::HostInfo Server::GetHostInfo()
+{
+    std::string name = asio::ip::host_name();
+    std::string ip_str = "127.0.0.1";
+    try {
+        tcp::resolver resolver(context);
+        auto results = resolver.resolve(name, "0");
+        auto score = [](const asio::ip::address_v4& ip) {
+            const auto b = ip.to_bytes();
+            if (b[0] == 192 && b[1] == 168) return 4;
+            if (b[0] == 10) return 3;
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return 2;
+            return 0;
+        };
+        int bestScore = -1;
+        for (const auto& entry : results) {
+            const auto address = entry.endpoint().address();
+            if (!address.is_v4()) continue;
+            const auto ip = address.to_v4();
+            if (ip.is_loopback() || ip.is_unspecified() || ip.is_multicast()) continue;
+            const int currentScore = score(ip);
+            if (currentScore > bestScore) {
+                bestScore = currentScore;
+                ip_str = ip.to_string();
+            }
+        }
+        logger << "[SERVER] LAN address selected for QR: " << ip_str << std::endl;
+    } catch (std::exception& e) {
+        logger << "[SERVER] Warning: Could not detect LAN IP (" << e.what() << "). Defaulting to localhost.\n";
+    }
+    return { name, ip_str, std::to_string(port) };
+}
+
+void Server::Send(int id, const unsigned char* bytes, size_t size) const { if (id >= 0 && id < connections.size()) connections[id]->Send(bytes, size); }
+
+void Server::Start()
+{
+    if (!acceptor.is_open()) { logger << "[SERVER] Cannot start: Acceptor is not open.\n"; return; }
+    try {
+        TCPDoAccept();
+        thread = std::thread([this]() {
+            while (true) {
+                try { context.run(); break; }
+                catch (std::exception& e) { logger << "[SERVER] CRITICAL EXCEPTION in IO Thread: " << e.what() << std::endl; }
+                catch (...) { logger << "[SERVER] Unknown exception in IO Thread.\n"; }
+            }
+        });
+        logger << "[SERVER] Started" << std::endl;
+    } catch (std::exception e) { logger << "[SERVER] Start failed: " << e.what() << "\n"; }
+}
+
+void Server::Close()
+{
+    logger << "[SERVER] Closing...\n";
+    asio::error_code ec;
+    acceptor.close(ec);
+    if (ec) logger << "[SERVER] Error closing acceptor: " << ec.message() << "\n";
+    for (std::shared_ptr<Connection> conn : connections) conn->Close(true);
+    context.stop();
+    if (thread.joinable()) thread.join();
+    logger << "[SERVER] Closed.\n";
+    adb::kill(port);
+}
+
+void Server::TCPDoAccept()
+{
+    acceptor.async_accept([&, this](asio::error_code ec, tcp::socket socket) {
+        if (!ec) {
+            logger << "[SERVER] Device connected." << socket.remote_endpoint() << std::endl;
+            std::array<uint8_t, 64 * 1024> buffer{};
+            size_t size = 0;
+            std::optional<DeviceDescriptor> descriptor;
+            while (!descriptor && size < buffer.size()) {
+                try {
+                    size += socket.read_some(asio::buffer(buffer.data() + size, buffer.size() - size));
+                    descriptor.emplace(Serializer::DeserializeDeviceDescriptor(buffer.data(), size));
+                } catch (const Serializer::IncompletePacket&) {
+                    continue;
+                } catch (const std::exception& e) {
+                    logger << "[SERVER] Rejected incompatible or malformed device descriptor: " << e.what() << " (" << size << " bytes received)" << std::endl;
+                    break;
+                }
+            }
+            if (!descriptor) {
+                asio::error_code closeError;
+                socket.close(closeError);
+            }
+            if (descriptor) {
+                auto conn = std::make_shared<Connection>(std::move(socket), *descriptor,
+                    std::bind(&Server::OnConnectionDisconnected, this, std::placeholders::_1),
+                    std::bind(&Server::OnConnectionReportingError, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+                connections.push_back(std::move(conn));
+                connectionListener.OnDeviceConnected(*descriptor);
+            }
+        } else if (ec != asio::error::operation_aborted) {
+            logger << "[SERVER] Accept Error: " << ec.message() << std::endl;
+        }
+        if (acceptor.is_open()) TCPDoAccept();
+    });
+}
+
+void Server::OnConnectionDisconnected(std::shared_ptr<Connection> connection)
+{
+    logger << "[SERVER] Device disconnected: " << connection->descriptor.name() << std::endl;
+    connections.erase(std::remove(connections.begin(), connections.end(), connection), connections.end());
+    connectionListener.OnDeviceDisconnected(connection->descriptor);
+}
+
+void Server::OnConnectionReportingError(std::shared_ptr<Connection> connection, const uint8_t* bytes, size_t size)
+{
+    try {
+        auto report = Serializer::DeserializeErrorReport(bytes, size);
+        connectionListener.OnDeviceErrorReported(connection->descriptor, report);
+    } catch (const std::exception& e) {
+        logger << "[SERVER] Ignored malformed error report: " << e.what() << std::endl;
+    }
+}
