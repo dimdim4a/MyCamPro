@@ -76,13 +76,13 @@ jobs:
           $files=Get-ChildItem "engine\windows\src" -Recurse -File -Include *.cpp,*.h
           foreach($f in $files){
             $s=Get-Content $f.FullName -Raw -Encoding UTF8
-            $s=$s.Replace("\"Nexora Studio\"","\"MyCam Pro Studio\"")
-            $s=$s.Replace("\"NEXORA\"","\"MYCAM PRO\"")
-            $s=$s.Replace("\"Your phone. Your camera. Connected.\"","\"Телефон. Ваша камера. Подключено.\"")
-            $s=$s.Replace("\"No devices detected\"","\"Устройства не найдены\"")
-            $s=$s.Replace("\"OFFLINE  |  Waiting for a device\"","\"ОФЛАЙН | Ожидание устройства\"")
-            $s=$s.Replace("\"Show QR code\"","\"Показать QR-код\"")
-            $s=$s.Replace("\"Connected devices\"","\"Подключённые устройства\"")
+            $s=$s.Replace(""Nexora Studio"",""MyCam Pro Studio"")
+            $s=$s.Replace(""NEXORA"",""MYCAM PRO"")
+            $s=$s.Replace(""Your phone. Your camera. Connected."",""Телефон. Ваша камера. Подключено."")
+            $s=$s.Replace(""No devices detected"",""Устройства не найдены"")
+            $s=$s.Replace(""OFFLINE  |  Waiting for a device"",""ОФЛАЙН | Ожидание устройства"")
+            $s=$s.Replace(""Show QR code"",""Показать QR-код"")
+            $s=$s.Replace(""Connected devices"",""Подключённые устройства"")
 
 
 
@@ -109,7 +109,7 @@ jobs:
         run: |
           $dist="$PWD\dist"
           New-Item -ItemType Directory -Force $dist | Out-Null
-          $exe=Get-ChildItem "engine\windows" -Recurse -Filter "Nexora.exe" | Where-Object {$_.FullName -match "\\x64\\Release\\"} | Select-Object -First 1
+          $exe=Get-ChildItem "engine\windows" -Recurse -Filter "Nexora.exe" | Where-Object {$_.FullName -match "\\x64\\Release\"} | Select-Object -First 1
           if(!$exe){throw "Nexora.exe not found"}
           Copy-Item $exe.FullName "$dist\MyCamPro.exe" -Force
           $softcam=Get-ChildItem "engine\windows\3rdparty\softcam" -Recurse -Filter "softcam.dll" | Where-Object {$_.FullName -match "dist\\bin\\x64"} | Select-Object -First 1
