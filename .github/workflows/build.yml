@@ -1,4 +1,5 @@
 name: Build MyCam Pro
+# Premium UI build: approved MyCam Pro reference layout
 
 on:
   push:
