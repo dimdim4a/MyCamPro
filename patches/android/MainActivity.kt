@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Size
 import android.widget.EditText
@@ -22,6 +23,11 @@ import com.godoy.nexora.networking.ConnectionManager
 import com.godoy.nexora.util.Logger
 import com.godoy.nexora.video.Camera
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.net.Socket
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallback {
     private lateinit var viewBinding: ActivityMainBinding
@@ -32,6 +38,8 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
     private var pendingPairAddress: String? = null
     private var pendingPairPort: Int? = null
     private val prefs by lazy { getSharedPreferences("mycam_connection", MODE_PRIVATE) }
+    private val discoveryExecutor = Executors.newSingleThreadExecutor()
+    @Volatile private var discoveryRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,7 +60,7 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onDestroy() {\n        discoveryExecutor.shutdownNow()\n        super.onDestroy()\n    }\n\n    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 1000) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) initialize()
@@ -78,9 +86,14 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
     override fun onConnectionFailed(connectionMode: ConnectionManager.Mode) {
         runOnUiThread {
             pendingQrPairing = false
-            qrscanner.start()
+            if (connectionMode == ConnectionManager.Mode.WIFI) {
+                Logger.log("MAIN", "Wi-Fi connection failed; starting LAN discovery")
+                discoverPcAndConnect()
+            } else {
+                qrscanner.start()
+                Toast.makeText(this, "USB-подключение не удалось. Выберите устройство вручную.", Toast.LENGTH_LONG).show()
+            }
             Logger.log("MAIN", "Error: Cannot connect!")
-            Toast.makeText(this, if (connectionMode == ConnectionManager.Mode.WIFI) "Не удалось подключиться. Отсканируйте QR-код ещё раз." else "USB-подключение не удалось. Отсканируйте QR-код.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -109,9 +122,68 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
             qrscanner.stop()
             connectionManager.connect(address, port)
         } else {
-            Logger.log("MAIN", "No trusted device. Waiting for first QR scan.")
-            qrscanner.start()
+            Logger.log("MAIN", "No trusted device. Starting automatic LAN discovery.")
+            discoverPcAndConnect()
         }
+    }
+
+    private fun discoverPcAndConnect() {
+        if (discoveryRunning) return
+        discoveryRunning = true
+        qrscanner.stop()
+        discoveryExecutor.execute {
+            try {
+                val local = getLocalIpv4()
+                if (local == null) throw IllegalStateException("Wi-Fi IPv4 unavailable")
+                val parts = local.split(".")
+                if (parts.size != 4) throw IllegalStateException("Invalid IPv4: $local")
+                val prefix = parts.take(3).joinToString(".")
+                val own = local
+                Logger.log("MAIN", "LAN discovery started on $prefix.0/24, target port 6969")
+                var found: String? = null
+                for (host in 1..254) {
+                    val ip = "$prefix.$host"
+                    if (ip == own) continue
+                    try {
+                        Socket().use { socket ->
+                            socket.connect(java.net.InetSocketAddress(ip, 6969), 180)
+                            found = ip
+                        }
+                        if (found != null) break
+                    } catch (_: Exception) { }
+                }
+                runOnUiThread {
+                    discoveryRunning = false
+                    if (found != null) {
+                        val address = found!!
+                        prefs.edit().putBoolean("paired", true).putString("address", address).putInt("port", 6969).apply()
+                        Logger.log("MAIN", "LAN discovery found MyCam Pro PC at $address:6969")
+                        connectionManager.connect(address, 6969)
+                    } else {
+                        Logger.log("MAIN", "LAN discovery found no MyCam Pro PC; falling back to QR")
+                        qrscanner.start()
+                        Toast.makeText(this, "ПК MyCam Pro не найден автоматически. Используйте QR-код.", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Logger.log("MAIN", "LAN discovery error: ${e.message}")
+                runOnUiThread { discoveryRunning = false; qrscanner.start() }
+            }
+        }
+    }
+
+    private fun getLocalIpv4(): String? {
+        val interfaces = NetworkInterface.getNetworkInterfaces()
+        while (interfaces.hasMoreElements()) {
+            val ni = interfaces.nextElement()
+            if (!ni.isUp || ni.isLoopback) continue
+            val addresses = ni.inetAddresses
+            while (addresses.hasMoreElements()) {
+                val addr = addresses.nextElement()
+                if (addr is Inet4Address && !addr.isLoopbackAddress && addr.hostAddress?.startsWith("192.168.") == true) return addr.hostAddress
+            }
+        }
+        return null
     }
 
     private fun processImage(imageProxy: ImageProxy) {
