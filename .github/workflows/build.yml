@@ -73,19 +73,16 @@ jobs:
       - name: Brand
         shell: pwsh
         run: |
-          $files=Get-ChildItem "engine\windows\src" -Recurse -File -Include *.cpp,*.h
+          $files=Get-ChildItem 'engine\windows\src' -Recurse -File -Include *.cpp,*.h
           foreach($f in $files){
             $s=Get-Content $f.FullName -Raw -Encoding UTF8
-            $s=$s.Replace(""Nexora Studio"",""MyCam Pro Studio"")
-            $s=$s.Replace(""NEXORA"",""MYCAM PRO"")
-            $s=$s.Replace(""Your phone. Your camera. Connected."",""Телефон. Ваша камера. Подключено."")
-            $s=$s.Replace(""No devices detected"",""Устройства не найдены"")
-            $s=$s.Replace(""OFFLINE  |  Waiting for a device"",""ОФЛАЙН | Ожидание устройства"")
-            $s=$s.Replace(""Show QR code"",""Показать QR-код"")
-            $s=$s.Replace(""Connected devices"",""Подключённые устройства"")
-
-
-
+            $s=$s.Replace('Nexora Studio','MyCam Pro Studio')
+            $s=$s.Replace('NEXORA','MYCAM PRO')
+            $s=$s.Replace('Your phone. Your camera. Connected.','Телефон. Ваша камера. Подключено.')
+            $s=$s.Replace('No devices detected','Устройства не найдены')
+            $s=$s.Replace('OFFLINE  |  Waiting for a device','ОФЛАЙН | Ожидание устройства')
+            $s=$s.Replace('Show QR code','Показать QR-код')
+            $s=$s.Replace('Connected devices','Подключённые устройства')
             Set-Content $f.FullName $s -Encoding UTF8
           }
       - name: MSBuild
