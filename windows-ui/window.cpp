@@ -6,14 +6,14 @@
 
 namespace {
 const wxColour BG(6,11,19), SURFACE(11,18,29), CARD(16,25,39), CARD2(21,32,49);
-const wxColour BLUE(47,126,255), GREEN(45,220,132), TEXT(242,246,252), MUTED(151,165,187);
+const wxColour BLUE(47,126,255), GREEN(45,220,132), TEXTC(242,246,252), MUTED(151,165,187);
 wxString U(const char* s){return wxString::FromUTF8(s);}
-wxStaticText* T(wxWindow* p,const wxString& s,int n=10,bool b=false,wxColour c=TEXT){
+wxStaticText* T(wxWindow* p,const wxString& s,int n=10,bool b=false,wxColour c=TEXTC){
  auto* x=new wxStaticText(p,wxID_ANY,s); auto f=x->GetFont(); f.SetPointSize(n); f.SetWeight(b?wxFONTWEIGHT_BOLD:wxFONTWEIGHT_NORMAL); x->SetFont(f); x->SetForegroundColour(c); return x;
 }
 wxPanel* C(wxWindow* p,wxColour c=CARD){auto* x=new wxPanel(p,wxID_ANY);x->SetBackgroundColour(c);return x;}
 wxButton* B(wxWindow* p,const wxString& s,int id=wxID_ANY,bool primary=false){
- auto* x=new wxButton(p,id,s,wxDefaultPosition,wxDefaultSize,wxBORDER_NONE);x->SetBackgroundColour(primary?BLUE:CARD2);x->SetForegroundColour(TEXT);x->SetMinSize(p->FromDIP(wxSize(primary?112:96,36)));return x;
+ auto* x=new wxButton(p,id,s,wxDefaultPosition,wxDefaultSize,wxBORDER_NONE);x->SetBackgroundColour(primary?BLUE:CARD2);x->SetForegroundColour(TEXTC);x->SetMinSize(p->FromDIP(wxSize(primary?112:96,36)));return x;
 }
 wxButton* I(wxWindow* p,const wxString& f,const wxString& tip){
  wxImage im(wxString("res/")+f,wxBITMAP_TYPE_PNG); if(im.IsOk()){if(!im.HasAlpha())im.InitAlpha();auto*d=im.GetData();size_t n=(size_t)im.GetWidth()*im.GetHeight()*3;for(size_t i=0;i<n;i++)d[i]=255;}
