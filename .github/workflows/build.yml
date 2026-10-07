@@ -30,10 +30,6 @@ jobs:
         shell: bash
         run: |
           cp "$PWD/patches/android/MainActivity.kt" engine/android/app/src/main/java/com/godoy/nexora/MainActivity.kt
-      - name: Apply MyCam Pro Windows network patch
-        shell: pwsh
-        run: |
-          Copy-Item "$PWD/patches/windows/server.cpp" "engine\\windows\\src\\net\\server.cpp" -Force
       - name: Brand
         shell: python
         run: |
