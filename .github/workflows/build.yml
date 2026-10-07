@@ -86,6 +86,10 @@ jobs:
             $s=$s.Replace('Connected devices','Подключённые устройства')
             Set-Content $f.FullName $s -Encoding UTF8
           }
+      - name: Apply MyCam Pro UI
+        shell: pwsh
+        run: |
+          Copy-Item "$PWD\windows-ui\window.cpp" "engine\windows\src\gui\window.cpp" -Force
       - name: MSBuild
         uses: microsoft/setup-msbuild@v2
       - name: vcpkg
