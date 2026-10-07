@@ -115,6 +115,25 @@ jobs:
           if(!(Test-Path "$dist\avformat-63.dll")){throw "FFmpeg runtime DLLs were not packaged"}
           if(!(Test-Path "$dist\softcam.dll")){throw "softcam.dll not packaged"}
           if(!(Test-Path "$dist\softcam_installer.exe")){throw "softcam installer not packaged"}
+
+          # Bundle Microsoft Visual C++ runtime (x64) so a clean Windows PC does not
+          # fail on VCRUNTIME/MSVCP DLLs.
+          $vs = & "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          if($LASTEXITCODE -ne 0 -or !$vs){throw "Visual Studio installation not found"}
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC" -Recurse -File -Filter "vcruntime140.dll" |
+            Where-Object {$_.FullName -match "\\x64\\Microsoft\.VC.*CRT"} |
+            Select-Object -First 1
+          if(!$crt){throw "MSVC x64 runtime not found"}
+          Copy-Item (Join-Path $crt.Directory.FullName "*.dll") $dist -Force
+
+          $required = @(
+            "avcodec-63.dll","avformat-63.dll","avutil-61.dll","swresample-7.dll","swscale-10.dll",
+            "wxbase333u_vc_x64_custom.dll","wxmsw333u_core_vc_x64_custom.dll",
+            "vcruntime140.dll","vcruntime140_1.dll","msvcp140.dll"
+          )
+          foreach($dll in $required){
+            if(!(Test-Path (Join-Path $dist $dll))){throw "Required runtime DLL missing: $dll"}
+          }
           @'
           @echo off
           set "ROOT=%~dp0"
