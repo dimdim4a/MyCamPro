@@ -1,12 +1,10 @@
 package com.godoy.nexora
-
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
-import android.os.SystemClock
 import android.provider.Settings
 import android.util.Size
 import android.widget.EditText
@@ -27,7 +25,6 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.Socket
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallback {
     private lateinit var viewBinding: ActivityMainBinding
@@ -60,11 +57,18 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
         }
     }
 
-    override fun onDestroy() {\n        discoveryExecutor.shutdownNow()\n        super.onDestroy()\n    }\n\n    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onDestroy() {
+        discoveryExecutor.shutdownNow()
+        super.onDestroy()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 1000) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) initialize()
-            else MaterialAlertDialogBuilder(this).setTitle("Требуется доступ к камере").setMessage("Разрешите доступ к камере в настройках приложения.").setPositiveButton("Открыть настройки") { _, _ -> startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply { data = Uri.fromParts("package", packageName, null) }) }.setNegativeButton("Отмена", null).show()
+            else MaterialAlertDialogBuilder(this).setTitle("Требуется доступ к камере").setMessage("Разрешите доступ к камере в настройках приложения.").setPositiveButton("Открыть настройки") { _, _ ->
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply { data = Uri.fromParts("package", packageName, null) })
+            }.setNegativeButton("Отмена", null).show()
         }
     }
 
@@ -75,7 +79,6 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
                 val port = pendingPairPort
                 if (address != null && port != null) prefs.edit().putBoolean("paired", true).putString("address", address).putInt("port", port).apply()
                 pendingQrPairing = false
-                Logger.log("MAIN", "QR pairing saved: $address:$port")
             }
             qrscanner.stop()
             Logger.log("MAIN", "Connection successful $connectionMode")
@@ -86,10 +89,8 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
     override fun onConnectionFailed(connectionMode: ConnectionManager.Mode) {
         runOnUiThread {
             pendingQrPairing = false
-            if (connectionMode == ConnectionManager.Mode.WIFI) {
-                Logger.log("MAIN", "Wi-Fi connection failed; starting LAN discovery")
-                discoverPcAndConnect()
-            } else {
+            if (connectionMode == ConnectionManager.Mode.WIFI) discoverPcAndConnect()
+            else {
                 qrscanner.start()
                 Toast.makeText(this, "USB-подключение не удалось. Выберите устройство вручную.", Toast.LENGTH_LONG).show()
             }
@@ -118,13 +119,8 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
         val address = prefs.getString("address", null)
         val port = prefs.getInt("port", 0)
         if (paired && !address.isNullOrBlank() && port in 1..65535) {
-            Logger.log("MAIN", "Auto-connecting to saved device $address:$port")
-            qrscanner.stop()
             connectionManager.connect(address, port)
-        } else {
-            Logger.log("MAIN", "No trusted device. Starting automatic LAN discovery.")
-            discoverPcAndConnect()
-        }
+        } else discoverPcAndConnect()
     }
 
     private fun discoverPcAndConnect() {
@@ -133,40 +129,33 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
         qrscanner.stop()
         discoveryExecutor.execute {
             try {
-                val local = getLocalIpv4()
-                if (local == null) throw IllegalStateException("Wi-Fi IPv4 unavailable")
+                val local = getLocalIpv4() ?: throw IllegalStateException("Wi-Fi IPv4 unavailable")
                 val parts = local.split(".")
                 if (parts.size != 4) throw IllegalStateException("Invalid IPv4: $local")
                 val prefix = parts.take(3).joinToString(".")
-                val own = local
-                Logger.log("MAIN", "LAN discovery started on $prefix.0/24, target port 6969")
                 var found: String? = null
                 for (host in 1..254) {
                     val ip = "$prefix.$host"
-                    if (ip == own) continue
+                    if (ip == local) continue
                     try {
-                        Socket().use { socket ->
-                            socket.connect(java.net.InetSocketAddress(ip, 6969), 180)
-                            found = ip
-                        }
-                        if (found != null) break
-                    } catch (_: Exception) { }
+                        Socket().use { it.connect(java.net.InetSocketAddress(ip, 6969), 180) }
+                        found = ip
+                        break
+                    } catch (_: Exception) {}
                 }
                 runOnUiThread {
                     discoveryRunning = false
                     if (found != null) {
                         val address = found!!
                         prefs.edit().putBoolean("paired", true).putString("address", address).putInt("port", 6969).apply()
-                        Logger.log("MAIN", "LAN discovery found MyCam Pro PC at $address:6969")
                         connectionManager.connect(address, 6969)
                     } else {
-                        Logger.log("MAIN", "LAN discovery found no MyCam Pro PC; falling back to QR")
                         qrscanner.start()
                         Toast.makeText(this, "ПК MyCam Pro не найден автоматически. Используйте QR-код.", Toast.LENGTH_LONG).show()
                     }
                 }
             } catch (e: Exception) {
-                Logger.log("MAIN", "LAN discovery error: ${e.message}")
+                Logger.log("MAIN", "LAN discovery error: \${e.message}")
                 runOnUiThread { discoveryRunning = false; qrscanner.start() }
             }
         }
@@ -193,7 +182,7 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
                 pendingQrPairing = true
                 pendingPairAddress = result.address
                 pendingPairPort = result.port
-                MaterialAlertDialogBuilder(this).setTitle("Подключение по Wi-Fi").setMessage("Подключиться к ${result.address}:${result.port}?").setPositiveButton("Подключить") { _, _ -> connectionManager.connect(result.address, result.port) }.setNegativeButton("Отмена") { _, _ -> pendingQrPairing = false; qrscanner.start() }.show()
+                MaterialAlertDialogBuilder(this).setTitle("Подключение по Wi-Fi").setMessage("Подключиться к \${result.address}:\${result.port}?").setPositiveButton("Подключить") { _, _ -> connectionManager.connect(result.address, result.port) }.setNegativeButton("Отмена") { _, _ -> pendingQrPairing = false; qrscanner.start() }.show()
             }
         }
     }
