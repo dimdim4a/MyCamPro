@@ -80,6 +80,10 @@ jobs:
           Set-Location engine
           git checkout $env:NEXORA_SHA
           git submodule update --init --recursive
+      - name: Apply MyCam Pro Windows network patch
+        shell: pwsh
+        run: |
+          Copy-Item "$PWD\\patches\\windows\\server.cpp" "engine\\windows\\src\\net\\server.cpp" -Force
       - name: Brand
         shell: pwsh
         run: |
