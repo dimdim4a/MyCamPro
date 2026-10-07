@@ -177,3 +177,5 @@ jobs:
           name: MyCamPro-Windows-x64
           path: dist\**
           if-no-files-found: error
+
+# UI reference build trigger: Russian UTF-8, dark/light, collapsible panels, emergency restore.
