@@ -105,15 +105,16 @@ jobs:
         shell: pwsh
         run: |
           $dist="$PWD\dist"
+          $staged="$PWD\engine\dist"
+          if(!(Test-Path $staged)){throw "engine\dist was not produced"}
           New-Item -ItemType Directory -Force $dist | Out-Null
-          $exe=Get-ChildItem "engine\windows" -Recurse -Filter "Nexora.exe" | Select-Object -First 1
-          if(!$exe){throw "Nexora.exe not found"}
-          Copy-Item $exe.FullName "$dist\MyCamPro.exe" -Force
-          $softcam=Get-ChildItem "engine\windows\3rdparty\softcam" -Recurse -Filter "softcam.dll" | Where-Object {$_.FullName -like "*\dist\bin\x64\*"} | Select-Object -First 1
-          $installer=Get-ChildItem "engine\windows\3rdparty\softcam" -Recurse -Filter "softcam_installer.exe" | Where-Object {$_.FullName -like "*\x64\Release\*"} | Select-Object -First 1
-          if(!$softcam -or !$installer){throw "Virtual camera build missing"}
-          Copy-Item $softcam.FullName "$dist\softcam.dll" -Force
-          Copy-Item $installer.FullName "$dist\softcam_installer.exe" -Force
+          Copy-Item "$staged\*" $dist -Recurse -Force
+          $exe=Get-ChildItem $dist -Filter "Nexora.exe" | Select-Object -First 1
+          if(!$exe){throw "Nexora.exe not found in engine\dist"}
+          Rename-Item $exe.FullName "$dist\MyCamPro.exe" -Force
+          if(!(Test-Path "$dist\avformat-63.dll")){throw "FFmpeg runtime DLLs were not packaged"}
+          if(!(Test-Path "$dist\softcam.dll")){throw "softcam.dll not packaged"}
+          if(!(Test-Path "$dist\softcam_installer.exe")){throw "softcam installer not packaged"}
           @'
           @echo off
           set "ROOT=%~dp0"
