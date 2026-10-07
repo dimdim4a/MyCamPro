@@ -18,3 +18,6 @@ Android camera → hardware H.264 → transport → Windows decode → MyCam Pro
 
 ## Prototype-only note
 The current bootstrap still consumes the Nexora engine at a pinned commit. This is temporary for P0 validation. It is not the final clean-room MyCam Engine and must be replaced/isolated before commercial release.
+
+
+CI packaging validation updated.
