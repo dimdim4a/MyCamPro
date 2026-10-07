@@ -2,6 +2,7 @@
 #include "settings.h"
 #include <wx/settings.h>
 #include <vector>
+#include <string>
 
 namespace {
 const wxColour BG(6,11,19), SURFACE(11,18,29), CARD(16,25,39), CARD2(21,32,49);
@@ -68,7 +69,7 @@ void Window::InitializeHeader(wxPanel* parent,wxBoxSizer* topsizer){
  auto* devicesPage=page(U("Устройства"),U("Ручное подключение. Wi‑Fi / USB / QR. Trusted devices. Автоматического переключения нет."));
  auto* settings=page(U("Настройки"),U("Тема • Производительность • Горячие клавиши • Fallback • Хранилище • Диагностика."));
  std::vector<wxPanel*> pp={camera,scenes,image,effects,recording,audio,devicesPage,settings};for(auto*x:pp)pgs->Add(x,1,wxEXPAND);for(size_t i=1;i<pp.size();i++)pp[i]->Hide();
- for(size_t i=0;i<nav.size();i++){nav[i]->Bind(wxEVT_BUTTON,[&,i](wxCommandEvent&){for(size_t j=0;j<pp.size();j++){pp[j]->Show(i==j);nav[j]->SetBackgroundColour(i==j?wxColour(26,91,190):SURFACE);}pages->Layout();});}
+ for(size_t i=0;i<nav.size();i++){nav[i]->Bind(wxEVT_BUTTON,[pages,pp,nav,i](wxCommandEvent&){for(size_t j=0;j<pp.size();j++){pp[j]->Show(i==j);nav[j]->SetBackgroundColour(i==j?wxColour(26,91,190):SURFACE);}pages->Layout();});}
 }
 void Window::InitializeTopBar(wxPanel*,wxBoxSizer*){}
 void Window::InitializeCanvasPanel(wxPanel*,wxBoxSizer*){}
