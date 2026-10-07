@@ -119,8 +119,18 @@ jobs:
 
           # Bundle Microsoft Visual C++ runtime (x64) so a clean Windows PC does not
           # fail on VCRUNTIME/MSVCP DLLs.
-          $vs = & "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          if($LASTEXITCODE -ne 0 -or !$vs){throw "Visual Studio installation not found"}
+          $vswhere = Get-Command vswhere.exe -ErrorAction SilentlyContinue
+          if($vswhere){
+            $vs = & $vswhere.Source -latest -products * -property installationPath
+          } else {
+            $candidates = @(
+              "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            )
+            $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if($found){ $vs = & $found -latest -products * -property installationPath }
+          }
+          if($LASTEXITCODE -ne 0 -or !$vs){throw "Visual Studio installation not found (vswhere.exe unavailable)"}
           $crt = Get-ChildItem "$vs\VC\Redist\MSVC" -Recurse -File -Filter "vcruntime140.dll" |
             Where-Object {$_.FullName -match "\\x64\\Microsoft\.VC.*CRT"} |
             Select-Object -First 1
