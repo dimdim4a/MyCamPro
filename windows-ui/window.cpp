@@ -30,8 +30,8 @@ wxButton* I(wxWindow* p,const wxString& f,const wxString& tip){
 Window::Window(Server::HostInfo hostinfo):wxFrame(nullptr,wxID_ANY,"MyCam Pro",wxDefaultPosition,wxDefaultSize,wxDEFAULT_FRAME_STYLE){
  wxString ep=wxStandardPaths::Get().GetExecutablePath(); wxFileName ef(ep); wxIcon icon(ef.GetPathWithSep()+wxString("res/nexora.ico"),wxBITMAP_TYPE_ICO);taskbarIcon=new wxTaskBarIcon();taskbarIcon->SetIcon(icon,"MyCam Pro");SetIcon(icon);
  taskbarIcon->Bind(wxEVT_TASKBAR_LEFT_DCLICK,&Window::MaximizeFromTaskbar,this);Bind(wxEVT_ICONIZE,&Window::MinimizeToTaskbar,this);
- auto* root=new wxPanel(this,wxID_ANY);root->SetBackgroundColour(BG);auto* top=new wxBoxSizer(wxVERTICAL);InitializeHeader(root,top);root->SetSizer(top);
- SetSizer(new wxBoxSizer(wxVERTICAL));GetSizer()->Add(root,1,wxEXPAND);SetMinClientSize(FromDIP(wxSize(1120,720)));SetClientSize(FromDIP(wxSize(1500,900)));Layout();Center();
+ auto* root=new wxPanel(this,wxID_ANY);root->SetBackgroundColour(BG);auto* top=new wxBoxSizer(wxVERTICAL);InitializeMenu(hostinfo);InitializeHeader(root,top);root->SetSizer(top);
+ SetSizer(new wxBoxSizer(wxVERTICAL));GetSizer()->Add(root,1,wxEXPAND);SetMinClientSize(FromDIP(wxSize(1120,720)));SetClientSize(FromDIP(wxSize(1500,900)));Layout();root->Layout();CallAfter([this,root](){Layout();root->Layout();root->Refresh();});Center();
 }
 Window::~Window(){delete taskbarIcon;}
 
