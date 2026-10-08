@@ -10,15 +10,26 @@
 #include <string>
 
 namespace {
-const wxColour BG(247,248,252), SURFACE(255,255,255), CARD(255,255,255), CARD2(242,244,249);
-const wxColour BLUE(91,82,245), GREEN(26,184,112), TEXTC(25,30,45), MUTED(105,114,135);
+const wxColour BG(248,249,253), SURFACE(255,255,255), CARD(255,255,255), CARD2(246,247,251), BORDER(226,230,240);
+const wxColour BLUE(91,82,245), GREEN(26,184,112), RED(255,72,91), TEXTC(24,29,45), MUTED(105,114,135);
 wxString U(const char* s){return wxString::FromUTF8(s);}
 wxStaticText* T(wxWindow* p,const wxString& s,int n=10,bool b=false,wxColour c=TEXTC){
  auto* x=new wxStaticText(p,wxID_ANY,s); auto f=x->GetFont(); f.SetPointSize(n); f.SetWeight(b?wxFONTWEIGHT_BOLD:wxFONTWEIGHT_NORMAL); x->SetFont(f); x->SetForegroundColour(c); return x;
 }
 wxPanel* C(wxWindow* p,wxColour c=CARD){auto* x=new wxPanel(p,wxID_ANY);x->SetBackgroundColour(c);return x;}
+wxBitmap MakeButtonBitmap(const wxString& label, const wxSize& size, bool primary){
+ wxBitmap bmp(size.x,size.y,32); wxMemoryDC dc(bmp);
+ dc.SetBackground(wxBrush(primary?BLUE:SURFACE)); dc.Clear();
+ dc.SetPen(wxPen(primary?BLUE:BORDER,1)); if(!primary) dc.DrawRoundedRectangle(0,0,size.x-1,size.y-1,10);
+ dc.SetTextForeground(primary?*wxWHITE:TEXTC);
+ wxFont f=wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT); f.SetPointSize(9); f.SetWeight(wxFONTWEIGHT_BOLD); dc.SetFont(f);
+ int tw=0,th=0; dc.GetTextExtent(label,&tw,&th); dc.DrawText(label,(size.x-tw)/2,(size.y-th)/2);
+ dc.SelectObject(wxNullBitmap); return bmp;
+}
 wxButton* B(wxWindow* p,const wxString& s,int id=wxID_ANY,bool primary=false){
- auto* x=new wxButton(p,id,s,wxDefaultPosition,wxDefaultSize,wxBORDER_NONE);x->SetBackgroundColour(primary?BLUE:CARD2);x->SetForegroundColour(TEXTC);x->SetMinSize(p->FromDIP(wxSize(primary?112:96,36)));return x;
+ auto sz=p->FromDIP(wxSize(primary?124:112,38));
+ auto* x=new wxBitmapButton(p,id,MakeButtonBitmap(s,sz,primary),wxDefaultPosition,sz,wxBORDER_NONE);
+ x->SetBackgroundColour(primary?BLUE:SURFACE); x->SetMinSize(sz); x->SetToolTip(s); return x;
 }
 class PreviewGrid : public wxPanel { public: PreviewGrid(wxWindow* p):wxPanel(p,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxTRANSPARENT_WINDOW|wxNO_BORDER){SetBackgroundStyle(wxBG_STYLE_PAINT);Bind(wxEVT_PAINT,&PreviewGrid::Paint,this);Hide();} void SetMode(int m){mode=m;Refresh();} private: int mode=0; void Paint(wxPaintEvent&){wxAutoBufferedPaintDC dc(this);dc.Clear();if(mode==0)return;int w=GetClientSize().x,h=GetClientSize().y;dc.SetPen(wxPen(wxColour(255,255,255,70),1));if(mode==1||mode==2){dc.DrawLine(w/3,0,w/3,h);dc.DrawLine(2*w/3,0,2*w/3,h);dc.DrawLine(0,h/3,w,h/3);dc.DrawLine(0,2*h/3,w,2*h/3);}if(mode==2){dc.SetPen(wxPen(wxColour(255,255,255,120),1));dc.DrawLine(w/2,0,w/2,h);dc.DrawLine(0,h/2,w,h/2);}if(mode==3){dc.DrawLine(0,0,w,h);dc.DrawLine(w,0,0,h);}if(mode==4){for(int i=1;i<4;i++){dc.DrawLine(i*w/4,0,i*w/4,h);dc.DrawLine(0,i*h/4,w,i*h/4);}}if(mode==5)dc.DrawRectangle(w/12,h/12,5*w/6,5*h/6);}};
 wxButton* I(wxWindow* p,const wxString& f,const wxString& tip){
@@ -74,9 +85,35 @@ void Window::InitializeHeader(wxPanel* parent,wxBoxSizer* topsizer){
 
  auto page=[&](const wxString&t,const wxString&d){auto*p=new wxPanel(pages,wxID_ANY);p->SetBackgroundColour(BG);auto*s=new wxBoxSizer(wxVERTICAL);auto*c=C(p,SURFACE);auto*z=new wxBoxSizer(wxVERTICAL);z->Add(T(c,t,22,true,TEXTC),0,wxALL,22);z->Add(T(c,d,10,false,MUTED),0,wxLEFT|wxRIGHT|wxBOTTOM,22);auto*x=B(c,U("Открыть настройки"),wxID_ANY,true);z->Add(x,0,wxLEFT|wxRIGHT|wxBOTTOM,22);c->SetSizer(z);s->Add(c,0,wxEXPAND);p->SetSizer(s);return p;};
  auto*scenes=page(U("Сцены"),U("Управление готовыми сценами и быстрым переключением."));auto*effects=page(U("Эффекты"),U("Фильтры, цветокоррекция, HDR, резкость и размытие."));auto*recording=page(U("Запись"),U("Качество, кодек, путь сохранения и горячие клавиши."));auto*virtualCamera=page(U("Виртуальная камера"),U("MyCam Pro Virtual Camera для OBS, Zoom, Discord и других приложений."));auto*devices=page(U("Устройства"),U("Wi‑Fi / USB / QR, подключенные телефоны и доверенные устройства."));auto*settings=page(U("Настройки"),U("Тема, производительность, хранилище, уведомления и диагностика."));
+    {
+        auto* themeCard=C(settings,SURFACE); auto* ts=new wxBoxSizer(wxHORIZONTAL);
+        ts->Add(T(themeCard,U("Тема"),11,true,TEXTC),0,wxALIGN_CENTER_VERTICAL|wxLEFT,16);
+        ts->Add(T(themeCard,U("Светлая / Тёмная / Системная"),9,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxLEFT,12);
+        ts->AddStretchSpacer();
+        auto* theme=new wxChoice(themeCard,wxID_ANY); theme->Append(U("Светлая")); theme->Append(U("Тёмная")); theme->Append(U("Системная")); theme->SetSelection(0);
+        theme->SetMinSize(FromDIP(wxSize(180,38))); ts->Add(theme,0,wxALIGN_CENTER_VERTICAL|wxRIGHT,16);
+        themeCard->SetSizer(ts); themeCard->SetMinSize(FromDIP(wxSize(-1,58)));
+        theme->Bind(wxEVT_CHOICE,[settings](wxCommandEvent& e){
+            const bool dark=e.GetSelection()==1;
+            const wxColour bg=dark?wxColour(20,24,34):BG, fg=dark?wxColour(242,245,251):TEXTC, card=dark?wxColour(30,36,50):SURFACE;
+            std::function<void(wxWindow*)> paint=[&](wxWindow* w){ w->SetBackgroundColour(card); w->SetForegroundColour(fg); for(auto* child:w->GetChildren()) paint(child); };
+            paint(settings); settings->SetBackgroundColour(bg); settings->Refresh(); settings->Layout();
+        });
+        settings->GetSizer()->Add(themeCard,0,wxEXPAND|wxBOTTOM,10);
+    }
  std::vector<wxPanel*>pp={camera,scenes,effects,recording,virtualCamera,devices,settings};for(auto*x:pp)pgs->Add(x,1,wxEXPAND);for(size_t i=1;i<pp.size();i++)pp[i]->Hide();for(size_t i=0;i<nav.size();i++)nav[i]->Bind(wxEVT_BUTTON,[pages,pp,nav,i](wxCommandEvent&){for(size_t j=0;j<pp.size();j++){pp[j]->Show(i==j);nav[j]->SetBackgroundColour(i==j?wxColour(238,239,255):CARD2);}pages->Layout();});
- statsText=new wxStaticText(bottom,wxID_ANY,U("60 FPS • 8.4 Mbps • 28 ms"));statsText->Hide();zoomLevelLabel=T(pv,U("1.0×"),9,true,TEXTC);zoomLevelLabel->Hide();
- torchButton=B(capture,U("ϟ"),wxID_ANY);swapButton=B(capture,U("⇄"),wxID_ANY);adjustmentsButton=B(capture,U("⚙"),wxID_ANY);rotateLeftButton=B(capture,U("↶"),wxID_ANY);rotateRightButton=B(capture,U("↷"),wxID_ANY);flipButton=B(capture,U("⇋"),wxID_ANY);flipVerticalButton=B(capture,U("⇵"),wxID_ANY);zoomOutButton=B(capture,U("−"),wxID_ANY);zoomInButton=B(capture,U("+"),wxID_ANY);for(auto*x:{torchButton,swapButton,adjustmentsButton,rotateLeftButton,rotateRightButton,flipButton,flipVerticalButton,zoomOutButton,zoomInButton})x->Hide();
+ statsText=new wxStaticText(bottom,wxID_ANY,U("60 FPS • 8.4 Mbps • 28 ms"));statsText->SetForegroundColour(MUTED);
+ // Real engine-connected controls remain visible. No mock controls are hidden over the runtime.
+ rotateLeftButton=B(pv,U("↶  Поворот"),wxID_ANY);
+ rotateRightButton=B(pv,U("↷"),wxID_ANY);
+ flipButton=B(pv,U("Зеркало"),wxID_ANY);
+ flipVerticalButton=B(pv,U("⇵"),wxID_ANY);
+ zoomOutButton=B(pv,U("−"),wxID_ANY);
+ zoomInButton=B(pv,U("+"),wxID_ANY);
+ torchButton=B(pv,U("ϟ  Фонарик"),wxID_ANY);
+ swapButton=B(pv,U("⇄  Камера"),wxID_ANY);
+ adjustmentsButton=B(pv,U("✦  Изображение"),wxID_ANY);
+ zoomLevelLabel=T(pv,U("1.0×"),9,true,TEXTC);
  shell->SetSizer(hs);topsizer->Add(shell,1,wxEXPAND);
 }
 void Window::InitializeTopBar(wxPanel*,wxBoxSizer*){}
