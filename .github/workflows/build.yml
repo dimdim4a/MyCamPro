@@ -160,14 +160,32 @@ jobs:
           }
           @'
           @echo off
+          setlocal
+          net session >nul 2>&1
+          if not "%errorlevel%"=="0" (
+            powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+            exit /b
+          )
           set "ROOT=%~dp0"
           "%ROOT%softcam_installer.exe" register "%ROOT%softcam.dll"
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+            echo Failed to register MyCam Pro Camera.
+            pause
+            exit /b 1
+          )
           start "" "%ROOT%MyCamPro.exe"
+          endlocal
           '@ | Set-Content "$dist\install.bat" -Encoding ASCII
           @'
           @echo off
+          setlocal
+          net session >nul 2>&1
+          if not "%errorlevel%"=="0" (
+            powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+            exit /b
+          )
           "%~dp0softcam_installer.exe" unregister "%~dp0softcam.dll"
+          endlocal
           '@ | Set-Content "$dist\uninstall.bat" -Encoding ASCII
           @'
           MyCam Pro
