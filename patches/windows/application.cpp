@@ -50,57 +50,7 @@ namespace
             dir.SetFullName(filename);
             path_ = dir.GetFullPath().ToUTF8().data();
 
-            int fps = std::max(1, std::min(120, fpsHint));
-            avformat_alloc_output_context2(&format_, nullptr, "mp4", path_.c_str());
-            if (!format_) return false;
-
-            codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
-            if (!codec_) codec_ = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
-            if (!codec_) { CleanupLocked(); return false; }
-
-            stream_ = avformat_new_stream(format_, nullptr);
-            if (!stream_) { CleanupLocked(); return false; }
-
-            codecCtx_ = avcodec_alloc_context3(codec_);
-            if (!codecCtx_) { CleanupLocked(); return false; }
-
-            codecCtx_->codec_id = codec_->id;
-            codecCtx_->codec_type = AVMEDIA_TYPE_VIDEO;
-            codecCtx_->pix_fmt = AV_PIX_FMT_YUV420P;
-            codecCtx_->width = 0;
-            codecCtx_->height = 0;
-            codecCtx_->time_base = AVRational{1, fps};
-            codecCtx_->framerate = AVRational{fps, 1};
-            codecCtx_->bit_rate = 6000000;
-            codecCtx_->gop_size = fps * 2;
-            codecCtx_->max_b_frames = 0;
-
-            if (format_->oformat->flags & AVFMT_GLOBALHEADER)
-                codecCtx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-
-            if (avcodec_open2(codecCtx_, codec_, nullptr) < 0) {
-                CleanupLocked();
-                return false;
-            }
-
-            stream_->time_base = codecCtx_->time_base;
-            if (avcodec_parameters_from_context(stream_->codecpar, codecCtx_) < 0) {
-                CleanupLocked();
-                return false;
-            }
-
-            if (!(format_->oformat->flags & AVFMT_NOFILE)) {
-                if (avio_open(&format_->pb, path_.c_str(), AVIO_FLAG_WRITE) < 0) {
-                    CleanupLocked();
-                    return false;
-                }
-            }
-
-            if (avformat_write_header(format_, nullptr) < 0) {
-                CleanupLocked();
-                return false;
-            }
-
+            fps_ = std::max(1, std::min(120, fpsHint));
             frameIndex_ = 0;
             recording_ = true;
             return true;
@@ -120,13 +70,11 @@ namespace
 
             if (input->width <= 0 || input->height <= 0) return;
 
-            if (codecCtx_->width != input->width || codecCtx_->height != input->height) {
-                if (frameIndex_ != 0) return;
-                // The encoder must be configured before the first header is written.
-                // Restart the session with the actual stream dimensions.
+            if (!format_) {
+                if (!StartLocked(input->width, input->height)) return;
+            } else if (codecCtx_->width != input->width || codecCtx_->height != input->height) {
                 StopLocked();
-                StartLocked(input->width, input->height);
-                if (!recording_) return;
+                if (!StartLocked(input->width, input->height)) return;
             }
 
             if (!frame_) {
@@ -173,7 +121,7 @@ namespace
     private:
         bool StartLocked(int width, int height)
         {
-            int fps = 30;
+            int fps = fps_;
             avformat_alloc_output_context2(&format_, nullptr, "mp4", path_.c_str());
             if (!format_) return false;
             codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
@@ -261,6 +209,7 @@ namespace
         SwsContext* sws_ = nullptr;
         AVFrame* frame_ = nullptr;
         int64_t frameIndex_ = 0;
+        int fps_ = 30;
         bool recording_ = false;
         std::string path_;
     };
