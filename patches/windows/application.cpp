@@ -264,6 +264,8 @@ namespace
         bool recording_ = false;
         std::string path_;
     };
+
+    VideoRecorder g_recorder;
 }
 
 namespace
@@ -349,7 +351,7 @@ bool Application::OnInit()
 				virtualCamera->SendRawFrame(frame);
 			}
 			snapshotManager.ProcessFrame(frame);
-            static VideoRecorder recorder;
+            VideoRecorder& recorder = g_recorder;
             recorder.ProcessFrame(frame);
 		},
 		// OnStatsReceivedCallback
