@@ -13,6 +13,7 @@
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 #include <mutex>
+#include <algorithm>
 #include <filesystem>
 
 
