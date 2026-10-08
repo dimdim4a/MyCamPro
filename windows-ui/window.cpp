@@ -2,6 +2,7 @@
 #include "settings.h"
 
 #include <wx/settings.h>
+#include <wx/simplebook.h>
 #include <wx/dcbuffer.h>
 #include <algorithm>
 #include <memory>
@@ -455,7 +456,7 @@ Window::Window(Server::HostInfo hostinfo)
                       0, wxLEFT | wxBOTTOM, FromDIP(20));
     for (const auto& effect : std::vector<wxString>{"Без фильтра", "Кино", "Ч/Б", "Винтаж"}) {
         auto* b = MakeButton(effectsPage, effect, LightPalette(), false, wxSize(300, 46));
-        b->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { adjustmentsButton->Command(wxEVT_BUTTON); });
+        b->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { TriggerButton(adjustmentsButton); });
         effectsSizer->Add(b, 0, wxLEFT | wxBOTTOM, FromDIP(10));
     }
     effectsSizer->AddStretchSpacer();
