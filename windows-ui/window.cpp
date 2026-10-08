@@ -272,9 +272,7 @@ void Window::InitializeHeader(wxPanel* parent,wxBoxSizer* topsizer){
     }
 
     hideRight->Bind(wxEVT_BUTTON,[rp,restoreRight](wxCommandEvent&){rp->Hide();restoreRight->Show();rp->GetParent()->Layout();});
-    restoreRight->Bind(wxEVT_BUTTON,[rp,restoreRight](wxCommandEvent){restoreRight->Hide();rp->Show();rp->GetParent()->Layout();});
-
-    themeButton = nullptr;
+    restoreRight->Bind(wxEVT_BUTTON,[rp,restoreRight](wxCommandEvent&){restoreRight->Hide();rp->Show();rp->GetParent()->Layout();});
 }
 void Window::InitializeTopBar(wxPanel*,wxBoxSizer*){}
 void Window::InitializeCanvasPanel(wxPanel*,wxBoxSizer*){}
