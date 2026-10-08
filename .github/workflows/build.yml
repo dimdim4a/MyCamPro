@@ -1,8 +1,10 @@
 name: Build MyCam Pro
+# Premium UI build: approved MyCam Pro reference layout
 
 on:
   push:
-    branches: [main]
+    branches: [main, prototype/p0-core]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -24,6 +26,10 @@ jobs:
           cd engine
           git checkout "$NEXORA_SHA"
           git submodule update --init --recursive
+      - name: Apply MyCam Pro Android connection patch
+        shell: bash
+        run: |
+          cp "$PWD/patches/android/MainActivity.kt" engine/android/app/src/main/java/com/godoy/nexora/MainActivity.kt
       - name: Brand
         shell: python
         run: |
@@ -70,6 +76,10 @@ jobs:
           Set-Location engine
           git checkout $env:NEXORA_SHA
           git submodule update --init --recursive
+      - name: Apply MyCam Pro Windows network patch
+        shell: pwsh
+        run: |
+          Copy-Item "$PWD\\patches\\windows\\server.cpp" "engine\\windows\\src\\net\\server.cpp" -Force
       - name: Brand
         shell: pwsh
         run: |
@@ -85,6 +95,10 @@ jobs:
             $s=$s.Replace('Connected devices','Подключённые устройства')
             Set-Content $f.FullName $s -Encoding UTF8
           }
+      - name: Apply MyCam Pro UI
+        shell: pwsh
+        run: |
+          Copy-Item "$PWD\windows-ui\window.cpp" "engine\windows\src\gui\window.cpp" -Force
       - name: MSBuild
         uses: microsoft/setup-msbuild@v2
       - name: vcpkg
@@ -118,8 +132,18 @@ jobs:
 
           # Bundle Microsoft Visual C++ runtime (x64) so a clean Windows PC does not
           # fail on VCRUNTIME/MSVCP DLLs.
-          $vs = & "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          if($LASTEXITCODE -ne 0 -or !$vs){throw "Visual Studio installation not found"}
+          $vswhere = Get-Command vswhere.exe -ErrorAction SilentlyContinue
+          if($vswhere){
+            $vs = & $vswhere.Source -latest -products * -property installationPath
+          } else {
+            $candidates = @(
+              "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            )
+            $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if($found){ $vs = & $found -latest -products * -property installationPath }
+          }
+          if($LASTEXITCODE -ne 0 -or !$vs){throw "Visual Studio installation not found (vswhere.exe unavailable)"}
           $crt = Get-ChildItem "$vs\VC\Redist\MSVC" -Recurse -File -Filter "vcruntime140.dll" |
             Where-Object {$_.FullName -match "\\x64\\Microsoft\.VC.*CRT"} |
             Select-Object -First 1
@@ -161,3 +185,5 @@ jobs:
           name: MyCamPro-Windows-x64
           path: dist\**
           if-no-files-found: error
+
+# UI reference build trigger: Russian UTF-8, dark/light, collapsible panels, emergency restore.
