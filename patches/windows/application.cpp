@@ -1,0 +1,820 @@
+#include "application.h"
+
+#include "gui/imgadjdlg.h"
+#include "gui/streamconfigdlg.h"
+#include "gui/devicesview.h"
+#include "gui/qrconview.h"
+#include "settings.h"
+#include "video/guipreviewscaler.h"
+#include <cmath>
+#include <iomanip>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
+#include <mutex>
+#include <filesystem>
+
+
+namespace
+{
+    class VideoRecorder
+    {
+    public:
+        ~VideoRecorder() { Stop(); }
+
+        bool IsRecording() const
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return recording_;
+        }
+
+        std::string CurrentPath() const
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return path_;
+        }
+
+        bool Start(int fpsHint = 30)
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (recording_) return true;
+
+            wxFileName dir = Settings::GetDocumentsDirectoryPath();
+            dir.AppendDir("MyCam Pro");
+            dir.AppendDir("Recordings");
+            if (!dir.DirExists())
+                dir.Mkdir(wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
+
+            const wxString filename = wxDateTime::Now().Format("MyCamPro_%Y%m%d_%H%M%S.mp4");
+            dir.SetFullName(filename);
+            path_ = dir.GetFullPath().ToUTF8().data();
+
+            int fps = std::max(1, std::min(120, fpsHint));
+            avformat_alloc_output_context2(&format_, nullptr, "mp4", path_.c_str());
+            if (!format_) return false;
+
+            codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
+            if (!codec_) codec_ = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+            if (!codec_) { CleanupLocked(); return false; }
+
+            stream_ = avformat_new_stream(format_, nullptr);
+            if (!stream_) { CleanupLocked(); return false; }
+
+            codecCtx_ = avcodec_alloc_context3(codec_);
+            if (!codecCtx_) { CleanupLocked(); return false; }
+
+            codecCtx_->codec_id = codec_->id;
+            codecCtx_->codec_type = AVMEDIA_TYPE_VIDEO;
+            codecCtx_->pix_fmt = AV_PIX_FMT_YUV420P;
+            codecCtx_->width = 0;
+            codecCtx_->height = 0;
+            codecCtx_->time_base = AVRational{1, fps};
+            codecCtx_->framerate = AVRational{fps, 1};
+            codecCtx_->bit_rate = 6000000;
+            codecCtx_->gop_size = fps * 2;
+            codecCtx_->max_b_frames = 0;
+
+            if (format_->oformat->flags & AVFMT_GLOBALHEADER)
+                codecCtx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+            if (avcodec_open2(codecCtx_, codec_, nullptr) < 0) {
+                CleanupLocked();
+                return false;
+            }
+
+            stream_->time_base = codecCtx_->time_base;
+            if (avcodec_parameters_from_context(stream_->codecpar, codecCtx_) < 0) {
+                CleanupLocked();
+                return false;
+            }
+
+            if (!(format_->oformat->flags & AVFMT_NOFILE)) {
+                if (avio_open(&format_->pb, path_.c_str(), AVIO_FLAG_WRITE) < 0) {
+                    CleanupLocked();
+                    return false;
+                }
+            }
+
+            if (avformat_write_header(format_, nullptr) < 0) {
+                CleanupLocked();
+                return false;
+            }
+
+            frameIndex_ = 0;
+            recording_ = true;
+            return true;
+        }
+
+        void Stop()
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            StopLocked();
+        }
+
+        void ProcessFrame(const AVFrame* input)
+        {
+            if (!input) return;
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!recording_) return;
+
+            if (input->width <= 0 || input->height <= 0) return;
+
+            if (codecCtx_->width != input->width || codecCtx_->height != input->height) {
+                if (frameIndex_ != 0) return;
+                // The encoder must be configured before the first header is written.
+                // Restart the session with the actual stream dimensions.
+                StopLocked();
+                StartLocked(input->width, input->height);
+                if (!recording_) return;
+            }
+
+            if (!frame_) {
+                frame_ = av_frame_alloc();
+                if (!frame_) { StopLocked(); return; }
+                frame_->format = AV_PIX_FMT_YUV420P;
+                frame_->width = input->width;
+                frame_->height = input->height;
+                if (av_frame_get_buffer(frame_, 32) < 0) { StopLocked(); return; }
+            }
+
+            if (av_frame_make_writable(frame_) < 0) { StopLocked(); return; }
+
+            sws_ = sws_getCachedContext(
+                sws_, input->width, input->height, static_cast<AVPixelFormat>(input->format),
+                input->width, input->height, AV_PIX_FMT_YUV420P,
+                SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!sws_) { StopLocked(); return; }
+
+            sws_scale(sws_, input->data, input->linesize, 0, input->height, frame_->data, frame_->linesize);
+            frame_->pts = frameIndex_++;
+
+            AVPacket* pkt = av_packet_alloc();
+            if (!pkt) { StopLocked(); return; }
+
+            int rc = avcodec_send_frame(codecCtx_, frame_);
+            while (rc >= 0) {
+                rc = avcodec_receive_packet(codec_, pkt);
+                if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) break;
+                if (rc < 0) { av_packet_free(&pkt); StopLocked(); return; }
+
+                av_packet_rescale_ts(pkt, codecCtx_->time_base, stream_->time_base);
+                pkt->stream_index = stream_->index;
+                if (av_interleaved_write_frame(format_, pkt) < 0) {
+                    av_packet_free(&pkt);
+                    StopLocked();
+                    return;
+                }
+                av_packet_unref(pkt);
+            }
+            av_packet_free(&pkt);
+        }
+
+    private:
+        bool StartLocked(int width, int height)
+        {
+            int fps = 30;
+            avformat_alloc_output_context2(&format_, nullptr, "mp4", path_.c_str());
+            if (!format_) return false;
+            codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
+            if (!codec_) codec_ = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+            if (!codec_) { CleanupLocked(); return false; }
+
+            stream_ = avformat_new_stream(format_, nullptr);
+            codecCtx_ = avcodec_alloc_context3(codec_);
+            if (!stream_ || !codecCtx_) { CleanupLocked(); return false; }
+
+            codecCtx_->codec_type = AVMEDIA_TYPE_VIDEO;
+            codecCtx_->codec_id = codec_->id;
+            codecCtx_->width = width;
+            codecCtx_->height = height;
+            codecCtx_->pix_fmt = AV_PIX_FMT_YUV420P;
+            codecCtx_->time_base = AVRational{1, fps};
+            codecCtx_->framerate = AVRational{fps, 1};
+            codecCtx_->bit_rate = 6000000;
+            codecCtx_->gop_size = fps * 2;
+            codecCtx_->max_b_frames = 0;
+            if (format_->oformat->flags & AVFMT_GLOBALHEADER)
+                codecCtx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+            if (avcodec_open2(codecCtx_, codec_, nullptr) < 0) { CleanupLocked(); return false; }
+            stream_->time_base = codecCtx_->time_base;
+            if (avcodec_parameters_from_context(stream_->codecpar, codecCtx_) < 0) { CleanupLocked(); return false; }
+
+            if (!(format_->oformat->flags & AVFMT_NOFILE) &&
+                avio_open(&format_->pb, path_.c_str(), AVIO_FLAG_WRITE) < 0) {
+                CleanupLocked(); return false;
+            }
+            if (avformat_write_header(format_, nullptr) < 0) { CleanupLocked(); return false; }
+            frameIndex_ = 0;
+            recording_ = true;
+            return true;
+        }
+
+        void StopLocked()
+        {
+            if (!format_) {
+                recording_ = false;
+                return;
+            }
+
+            if (codecCtx_ && recording_) {
+                AVPacket* pkt = av_packet_alloc();
+                if (pkt) {
+                    if (avcodec_send_frame(codecCtx_, nullptr) >= 0) {
+                        while (avcodec_receive_packet(codecCtx_, pkt) >= 0) {
+                            av_packet_rescale_ts(pkt, codecCtx_->time_base, stream_->time_base);
+                            pkt->stream_index = stream_->index;
+                            av_interleaved_write_frame(format_, pkt);
+                            av_packet_unref(pkt);
+                        }
+                    }
+                    av_packet_free(&pkt);
+                }
+            }
+
+            if (format_) av_write_trailer(format_);
+            CleanupLocked();
+            recording_ = false;
+        }
+
+        void CleanupLocked()
+        {
+            if (sws_) { sws_freeContext(sws_); sws_ = nullptr; }
+            if (frame_) { av_frame_free(&frame_); }
+            if (codecCtx_) { avcodec_free_context(&codecCtx_); }
+            if (format_) {
+                if (format_->pb && !(format_->oformat->flags & AVFMT_NOFILE))
+                    avio_closep(&format_->pb);
+                avformat_free_context(format_);
+                format_ = nullptr;
+            }
+            stream_ = nullptr;
+            codec_ = nullptr;
+        }
+
+        mutable std::mutex mutex_;
+        AVFormatContext* format_ = nullptr;
+        AVCodecContext* codecCtx_ = nullptr;
+        const AVCodec* codec_ = nullptr;
+        AVStream* stream_ = nullptr;
+        SwsContext* sws_ = nullptr;
+        AVFrame* frame_ = nullptr;
+        int64_t frameIndex_ = 0;
+        bool recording_ = false;
+        std::string path_;
+    };
+}
+
+namespace
+{
+	void ShowTaskbarNotification(Window* window, const wxString& title, const wxString& message,
+		int timeout, int icon)
+	{
+#ifdef __WXMSW__
+		window->GetTaskbarIcon()->ShowBalloon(title, message, timeout, icon);
+#else
+		// wxTaskBarIcon::ShowBalloon is only available on Windows. The main window
+		// already exposes connection and error state on Linux, so keep this optional.
+		wxUnusedVar(window);
+		wxUnusedVar(title);
+		wxUnusedVar(message);
+		wxUnusedVar(timeout);
+		wxUnusedVar(icon);
+#endif
+	}
+}
+
+Application::Application()
+{
+	#if wxCHECK_VERSION(3, 3, 0)
+	SetAppearance(Appearance::System);
+	#endif
+	wxInitAllImageHandlers();
+
+	SetAppName("Nexora");
+	
+	Settings::Load();
+	stateRegistry = Settings::GetDeviceStates();
+}
+
+bool Application::OnInit()
+{
+	if (!wxApp::OnInit())
+		return false;
+
+	switch (Settings::Get("DIRECTSHOW_RESOLUTION") + Window::MenuIDs::DS_SD)
+	{
+		case Window::MenuIDs::DS_SD: virtualCamera = CreateVirtualCameraSink(640, 480); break;
+		case Window::MenuIDs::DS_HD: virtualCamera = CreateVirtualCameraSink(1280, 720); break;
+		case Window::MenuIDs::DS_FHD: virtualCamera = CreateVirtualCameraSink(1920, 1080); break;
+		case Window::MenuIDs::DS_QHD: virtualCamera = CreateVirtualCameraSink(3840, 2160); break;
+		default: virtualCamera = CreateVirtualCameraSink(1280, 720);
+	}
+
+	try {
+		server = std::make_unique<Server>(6969, *this);
+		server->Start();
+	}
+	catch (const std::exception& e) {
+		wxMessageBox(
+			wxString::Format("Critical Error: Could not start network server.\n\nReason: %s\n\nPlease check if port 6969 is in use.", e.what()),
+			"Initialization Failed",
+			wxOK | wxICON_ERROR | wxCENTRE,
+			nullptr
+		);
+
+		// Exit application if the server fails to start
+		return false;
+	}
+
+	mainWindow = new Window(server->GetHostInfo());
+	if (virtualCamera && !virtualCamera->IsReady())
+	{
+		wxMessageBox(
+			wxString::FromUTF8(virtualCamera->StatusMessage().c_str()),
+			"Virtual camera unavailable",
+			wxOK | wxICON_WARNING,
+			mainWindow);
+	}
+
+	rtspManager = std::make_unique<RTSP::Manager>(
+		*server,
+		// OnFrameReceivedCallback
+		[&](AVFrame* frame) {
+			if (mainWindow && mainWindow->GetCanvas()) {
+				mainWindow->GetCanvas()->ProcessRawFrameAsync(frame);
+			}
+			if (virtualCamera) {
+				virtualCamera->SendRawFrame(frame);
+			}
+			snapshotManager.ProcessFrame(frame);
+            static VideoRecorder recorder;
+            recorder.ProcessFrame(frame);
+		},
+		// OnStatsReceivedCallback
+		[&](const RTSP::Receiver::Stats& stats) {
+			if (Settings::Get("SHOW_STATS") != 0 && mainWindow)
+			{
+				std::stringstream ss;
+				// Bitrate with 1 decimal precision
+				ss << stats.width << "p  |  " << (int)std::round(stats.fps) << " fps  |  " << std::fixed << std::setprecision(1) << stats.bitrate << " Mbps";
+
+				// Safe UI update
+				mainWindow->GetEventHandler()->CallAfter([this, labelText = ss.str()]() {
+					if (mainWindow && mainWindow->GetStatsText()) {
+						mainWindow->GetStatsText()->SetLabelText(labelText);
+						// Force layout to prevent overlap if text grows
+						mainWindow->GetStatsText()->GetParent()->Layout();
+					}
+				});
+			}
+		}
+	);
+
+	BindEventListeners();
+	mainWindow->Show();
+
+	return true;
+}
+
+StreamOptions& Application::GetCurrentDeviceStreamOptions()
+{
+	auto deviceId = rtspManager->GetStreamingDevice();
+	// Safety check: if no device is streaming, return a dummy or handle error
+	// For now assuming caller checks availability, but using .at() checks bounds
+	const auto& desc = rtspManager->GetDescriptors().at(deviceId);
+	return stateRegistry[desc.name()];
+}
+
+void Application::BindEventListeners()
+{
+	mainWindow->Bind(wxEVT_CLOSE_WINDOW, &Application::OnWindowCloseEvent, this);
+	mainWindow->Bind(wxEVT_MENU, &Application::OnMenuEvent, this);
+	mainWindow->Bind(wxEVT_BUTTON, &Application::OnMenuEvent, this, Window::MenuIDs::QR);
+	mainWindow->Bind(wxEVT_BUTTON, &Application::OnMenuEvent, this, Window::MenuIDs::DEVICES);
+
+	mainWindow->GetSourceChoice()->Bind(wxEVT_CHOICE, &Application::OnSourceChanged, this);
+	mainWindow->GetAdjustmentsButton()->Bind(wxEVT_BUTTON, &Application::ShowAdjustmentsDialog, this);
+	mainWindow->GetStreamOptionsButton()->Bind(wxEVT_BUTTON, &Application::ShowStreamConfigDialog, this);
+
+	mainWindow->GetRotateLeftButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+		rtspManager->Rotate(-90);
+	});
+
+	mainWindow->GetRotateRightButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+		rtspManager->Rotate(90);
+	});
+
+	mainWindow->GetFlipButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+		rtspManager->FlipHorizontally();
+	});
+
+	mainWindow->GetFlipVerticalButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+		rtspManager->FlipVertically();
+	});
+
+	// Check if devices exist before accessing options to prevent crashes
+	mainWindow->GetTorchButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+		if (rtspManager->GetStreamingDevice() < 0) return;
+		auto& options = GetCurrentDeviceStreamOptions();
+		auto flash = options.flashEnabled = !options.flashEnabled;
+		rtspManager->SetFlash(flash);
+	});
+
+	mainWindow->GetSwapButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+		if (rtspManager->GetStreamingDevice() < 0) return;
+		auto& options = GetCurrentDeviceStreamOptions();
+		options.backCameraActive = !options.backCameraActive;
+		rtspManager->SwapCamera();
+	});
+
+	mainWindow->GetZoomInButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+		if (rtspManager->GetStreamingDevice() < 0) return;
+		auto& options = GetCurrentDeviceStreamOptions();
+		options.zoom = std::min(10.0f, options.zoom + 0.5f);
+		mainWindow->GetZoomLevelLabel()->SetLabelText(wxString::Format("%.1fx", options.zoom));
+		rtspManager->Zoom(options.zoom);
+	});
+
+	mainWindow->GetZoomOutButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+		if (rtspManager->GetStreamingDevice() < 0) return;
+		auto& options = GetCurrentDeviceStreamOptions();
+		options.zoom = std::max(1.0f, options.zoom - 0.5f);
+		mainWindow->GetZoomLevelLabel()->SetLabelText(wxString::Format("%.1fx", options.zoom));
+		rtspManager->Zoom(options.zoom);
+	});
+
+	mainWindow->GetSnapshotButton()->Bind(wxEVT_BUTTON, [&](const wxEvent& arg) {
+        if (rtspManager->GetStreamingDevice() < 0) return;
+        snapshotManager.RequestSnapshot();
+    });
+    mainWindow->Bind(wxEVT_MENU, [&](wxCommandEvent& e) {
+        if (e.GetId() != 200) return;
+        static VideoRecorder recorder;
+        if (recorder.IsRecording()) {
+            recorder.Stop();
+            mainWindow->SetConnectionStatus(rtspManager->GetStreamingDevice() >= 0,
+                rtspManager->GetStreamingDevice() >= 0
+                    ? wxString::FromUTF8(rtspManager->GetDescriptors()[rtspManager->GetStreamingDevice()].name().c_str())
+                    : wxString{});
+            return;
+        }
+        int fps = 30;
+        if (rtspManager->GetStreamingDevice() >= 0)
+            fps = stateRegistry[rtspManager->GetDescriptors()[rtspManager->GetStreamingDevice()].name()].fps;
+        if (!recorder.Start(fps)) {
+            wxMessageBox("Не удалось начать запись видео.", "MyCam Pro", wxOK | wxICON_ERROR, mainWindow);
+            return;
+        }
+        mainWindow->SetConnectionStatus(true, "● Идёт запись");
+    });
+}
+
+void Application::OnDeviceConnected(DeviceDescriptor& descriptor) const
+{
+	ShowTaskbarNotification(mainWindow, "New stream available", "Streaming device " + descriptor.name() + " available!", 10, wxICON_INFORMATION);
+	rtspManager->AddDescriptor(descriptor);
+	UpdateAvailableDevices();
+	mainWindow->SetConnectionStatus(true, wxString::FromUTF8(descriptor.name().c_str()));
+}
+
+void Application::OnDeviceDisconnected(DeviceDescriptor& descriptor) const
+{
+	ShowTaskbarNotification(mainWindow, "Stream ended", "Streaming device " + descriptor.name() + " disconnected!", 10, wxICON_INFORMATION);
+	
+	// Check if the device that just disconnected was the active streaming device
+	// If it was reset the canvas to blank
+	int streamingDeviceId = rtspManager->GetStreamingDevice();
+	if (streamingDeviceId >= 0)
+	{
+		const auto& streamingDescriptor = rtspManager->GetDescriptors()[streamingDeviceId];
+		if (streamingDescriptor == descriptor)
+			mainWindow->GetCanvas()->Clear();
+	}
+
+	// Remove from manager
+	rtspManager->RemoveDescriptor(descriptor);
+
+	// Update UI list
+	UpdateAvailableDevices();
+	mainWindow->SetConnectionStatus(!rtspManager->GetDescriptors().empty(),
+		rtspManager->GetDescriptors().empty() ? wxString{} : wxString::FromUTF8(rtspManager->GetDescriptors().front().name().c_str()));
+}
+
+void Application::OnDeviceErrorReported(DeviceDescriptor& descriptor, const Connection::ErrorReport& error) const
+{
+	auto icon = error.severity == Connection::ErrorReport::SEVERITY_WARNING ? wxICON_WARNING : wxICON_ERROR;
+	ShowTaskbarNotification(mainWindow, descriptor.name() + " " + error.error, error.description, 1000, icon);
+}
+
+void Application::UpdateAvailableDevices() const
+{
+	auto choice = mainWindow->GetSourceChoice();
+	int currentSelectionIndex = rtspManager->GetStreamingDevice();
+
+	choice->Clear();
+
+	const auto& devices = rtspManager->GetDescriptors();
+
+	if (devices.empty())
+	{
+		// Logic Change: If empty, add placeholder and select it
+		choice->Append("No devices");
+		choice->SetSelection(0);
+
+		// Optional: Clear stats since nothing is playing
+		if (mainWindow->GetStatsText())
+			mainWindow->GetStatsText()->SetLabelText("-- x --  |  -- fps  |  -- Mbps");
+	}
+	else
+	{
+		choice->Append("Select device");
+
+		// Repopulate
+		for (auto& desc : devices)
+			choice->Append(desc.name());
+
+		if (currentSelectionIndex >= 0 && currentSelectionIndex < (int)devices.size())
+		{
+			// Only restore selection if valid
+			choice->SetSelection(currentSelectionIndex + 1);
+		}
+		else
+		{
+			// If the previously selected device is gone, or we stopped, select nothing
+			choice->SetSelection(0);
+		}
+	}
+}
+
+void Application::OnMenuEvent(wxCommandEvent& event)
+{
+	switch (event.GetId())
+	{
+		case wxID_EXIT:
+			mainWindow->Close();
+			break;
+		case Window::MenuIDs::DEVICES:
+		{
+			DevicesView devlistview(mainWindow, rtspManager->GetDescriptors());
+			devlistview.ShowModal();
+			break;
+		}
+
+		case Window::MenuIDs::QR:
+		{
+			auto info = server->GetHostInfo();
+			QrconView qrview(std::get<0>(info), std::get<1>(info), std::get<2>(info), wxSize(150, 150));
+			qrview.ShowModal();
+			break;
+		}
+
+		case Window::MenuIDs::HIDE2TRAY:
+		{
+			Settings::Set("MINIMIZE_TASKBAR", event.IsChecked() ? 1 : 0);
+			break;
+		}
+
+		case Window::MenuIDs::SHOWSTATS:
+		{
+			Settings::Set("SHOW_STATS", event.IsChecked() ? 1 : 0);
+			mainWindow->GetStatsText()->Show(event.IsChecked());
+			mainWindow->Layout(); // Refresh layout to hide/show properly
+			break;
+		}
+
+		case Window::MenuIDs::SAVESTATE:
+		{
+			Settings::Set("SAVE_DEVICE_STATES", event.IsChecked() ? 1 : 0);
+			break;
+		}
+
+		case Window::MenuIDs::DS_SD:
+		case Window::MenuIDs::DS_HD:
+		case Window::MenuIDs::DS_FHD:
+		case Window::MenuIDs::DS_QHD:
+        {
+
+			Settings::Set("DIRECTSHOW_RESOLUTION", event.GetId() - Window::MenuIDs::DS_SD);
+			break;
+		}
+	}
+}
+
+void Application::OnSourceChanged(wxEvent& event)
+{
+	int deviceId = mainWindow->GetSourceChoice()->GetSelection() - 1;
+
+	// Safety: Handle empty list or "No devices" placeholder
+	if (deviceId == wxNOT_FOUND || rtspManager->GetDescriptors().empty())
+		return;
+
+	const auto& descriptor = rtspManager->GetDescriptors()[deviceId];
+
+	EnsureStateInitialized(descriptor.name(), descriptor);
+	auto& state = stateRegistry[descriptor.name()];
+
+	// Validate Resolution exists in current capabilities
+	bool resFound = false;
+	const auto& resList = state.backCameraActive ? descriptor.backResolutions() : descriptor.frontResolutions();
+
+	if (!resList.empty())
+	{
+		for (size_t i = 0; i < resList.size(); i++)
+		{
+			if (resList[i] == state.resolution)
+			{
+				resFound = true;
+				break;
+			}
+		}
+		if (!resFound)
+			state.resolution = resList[0];
+	}
+	else
+	{
+		// Handle error case: Device reported 0 resolutions
+		ShowTaskbarNotification(mainWindow, "Error", "Device reported no supported resolutions.", 10, wxICON_WARNING);
+	}
+
+	rtspManager->Connect2Stream(deviceId, state);
+
+	// Update UI Zoom Label to match state
+	mainWindow->GetZoomLevelLabel()->SetLabelText(wxString::Format("%.1fx", state.zoom));
+}
+
+void Application::OnWindowCloseEvent(wxCloseEvent& event)
+{
+	// Hide window for responsive UI close feeling
+	mainWindow->Hide();
+
+	rtspManager.reset();
+	server->Close();
+
+	Settings::UpdateDeviceStates(stateRegistry);
+	Settings::Save();
+
+	event.Skip();
+}
+
+void Application::EnsureStateInitialized(std::string name, const DeviceDescriptor& descriptor)
+{
+	// operator[] creates the entry if it doesn't exist
+	auto& state = stateRegistry[name];
+
+	// Ensure defaults if this is a fresh entry
+	if (state.zoom < 1.0f) state.zoom = 1.0f;
+
+	// 1. Initialize Sliders (Default 50 if empty)
+	if (descriptor.filters().count(Video::Filter::Category::CORRECTION))
+	{
+		for (const auto& fname : descriptor.filters().at(Video::Filter::Category::CORRECTION))
+		{
+			if (state.filterSliderValues.find(fname) == state.filterSliderValues.end())
+			{
+				state.filterSliderValues[fname] = 50;
+			}
+		}
+	}
+}
+
+void Application::ShowAdjustmentsDialog(wxCommandEvent& event)
+{
+	if (rtspManager->GetDescriptors().empty()) return;
+
+	int currentDeviceId = rtspManager->GetStreamingDevice();
+	if (currentDeviceId < 0) return;
+
+	const auto& desc = rtspManager->GetDescriptors()[currentDeviceId];
+
+	EnsureStateInitialized(desc.name(), desc);
+	auto& state = stateRegistry[desc.name()];
+
+	ImgAdjDlg dialog(mainWindow, desc, state.filterSliderValues, state.activeEffectFilter);
+
+	dialog.Bind(EVT_FILTER_PARAM_CHANGED, [&](const wxCommandEvent& event) 
+	{
+		auto name = event.GetString().ToStdString();
+		auto value = event.GetInt();
+
+		rtspManager->ApplyCorrectionFilter(name, value);
+		state.filterSliderValues[name] = value;
+	});
+
+	dialog.Bind(EVT_FILTER_SWITCH_CHANGED, [&](const wxCommandEvent& event) 
+	{
+		auto name = event.GetString().ToStdString();
+		// auto category = event.GetInt();
+
+		rtspManager->ApplyEffectFilter(name);
+		state.activeEffectFilter = name;
+	});
+
+	dialog.ShowModal();
+}
+
+void Application::ShowStreamConfigDialog(wxCommandEvent& event)
+{
+	int deviceId = rtspManager->GetStreamingDevice();
+	if (deviceId < 0 || rtspManager->GetDescriptors().empty())
+		return;
+
+	const auto& desc = rtspManager->GetDescriptors()[deviceId];
+	std::string deviceName = desc.name();
+
+	EnsureStateInitialized(deviceName, desc);
+	auto& state = stateRegistry[deviceName];
+
+	StreamConfigDlg::Config config;
+
+	config.resIndex = 0;
+	const auto& resList = state.backCameraActive ? desc.backResolutions() : desc.frontResolutions();
+	for (size_t i = 0; i < resList.size(); i++)
+	{
+		if (resList[i] == state.resolution)
+		{
+			config.resIndex = i;
+			break;
+		}
+	}
+
+	config.fps = state.fps;
+	config.adaptiveBitrate = state.adaptiveBitrate;
+	config.bitrate = state.bitrate;
+	config.minBitrate = state.minBitrate;
+	config.maxBitrate = state.maxBitrate;
+	config.stabilizationEnabled = state.stabilizationEnabled;
+	config.flashEnabled = state.flashEnabled;
+	config.focusMode = state.focusMode;
+	config.h265Enabled = state.h265Enabled;
+
+	StreamConfigDlg dlg(mainWindow, desc, state.backCameraActive, config);
+
+	dlg.Bind(EVT_STREAM_RESOLUTION_CHANGED, [this, deviceName](wxCommandEvent& e) 
+	{
+		wxString resStr = e.GetString(); // "1920 x 1080"
+		long w = 0, h = 0;
+		resStr.BeforeFirst('x').ToLong(&w);
+		resStr.AfterFirst('x').ToLong(&h);
+
+		rtspManager->SetResolution((uint16_t)w, (uint16_t)h);
+		stateRegistry[deviceName].resolution = { (int)w, (int)h };
+	});
+
+	dlg.Bind(EVT_STREAM_FPS_CHANGED, [this, deviceName](wxCommandEvent& e) 
+	{
+		int fps = e.GetInt();
+		rtspManager->SetFPS(fps);
+		stateRegistry[deviceName].fps = fps;
+	});
+
+	dlg.Bind(EVT_STREAM_BITRATE_CHANGED, [this, deviceName, &dlg](wxCommandEvent& e) 
+	{
+		auto& regState = stateRegistry[deviceName];
+		regState.adaptiveBitrate = dlg.IsAdaptiveBitrate();
+		regState.bitrate = dlg.GetStaticBitrate();
+		regState.minBitrate = dlg.GetMinBitrate();
+		regState.maxBitrate = dlg.GetMaxBitrate();
+
+		if (regState.adaptiveBitrate) 
+		{
+			rtspManager->SetAdaptiveBitrate(regState.minBitrate, regState.maxBitrate);
+		}
+		else 
+		{
+			rtspManager->SetBitrate(regState.bitrate);
+		}
+	});
+
+	dlg.Bind(EVT_STREAM_CONFIG_CHANGED, [this, deviceName, &dlg](wxCommandEvent& e) 
+	{
+		auto& regState = stateRegistry[deviceName];
+
+		if (regState.stabilizationEnabled != dlg.IsStabilizationEnabled()) 
+		{
+			regState.stabilizationEnabled = dlg.IsStabilizationEnabled();
+			rtspManager->SetStabilization(regState.stabilizationEnabled);
+		}
+
+		if (regState.flashEnabled != dlg.IsFlashEnabled()) 
+		{
+			regState.flashEnabled = dlg.IsFlashEnabled();
+			rtspManager->SetFlash(regState.flashEnabled);
+		}
+
+		if (regState.focusMode != dlg.GetFocusMode()) 
+		{
+			regState.focusMode = dlg.GetFocusMode();
+			rtspManager->SetFocusMode(regState.focusMode);
+		}
+
+		if (regState.h265Enabled != dlg.IsH265Enabled()) 
+		{
+			regState.h265Enabled = dlg.IsH265Enabled();
+			rtspManager->SetH265Codec(regState.h265Enabled);
+		}
+	});
+
+	dlg.ShowModal();
+}
