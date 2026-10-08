@@ -1,128 +1,662 @@
 #include "gui/window.h"
 #include "settings.h"
+
 #include <wx/settings.h>
-#include <wx/stdpaths.h>
-#include <wx/filename.h>
 #include <wx/dcbuffer.h>
-#include <functional>
+#include <algorithm>
 #include <memory>
 #include <vector>
-#include <string>
 
 namespace {
-const wxColour BG(248,249,253), SURFACE(255,255,255), CARD(255,255,255), CARD2(246,247,251), BORDER(226,230,240);
-const wxColour BLUE(91,82,245), GREEN(26,184,112), RED(255,72,91), TEXTC(24,29,45), MUTED(105,114,135);
-wxString U(const char* s){return wxString::FromUTF8(s);}
-wxStaticText* T(wxWindow* p,const wxString& s,int n=10,bool b=false,wxColour c=TEXTC){
- auto* x=new wxStaticText(p,wxID_ANY,s); auto f=x->GetFont(); f.SetPointSize(n); f.SetWeight(b?wxFONTWEIGHT_BOLD:wxFONTWEIGHT_NORMAL); x->SetFont(f); x->SetForegroundColour(c); return x;
+struct Palette {
+    wxColour bg{248,249,253};
+    wxColour surface{255,255,255};
+    wxColour surface2{244,246,250};
+    wxColour border{226,230,240};
+    wxColour text{25,30,45};
+    wxColour muted{103,112,132};
+    wxColour primary{91,82,245};
+    wxColour primarySoft{238,236,255};
+    wxColour success{24,180,110};
+    wxColour danger{239,76,91};
+};
+
+Palette LightPalette() { return Palette{}; }
+
+Palette DarkPalette() {
+    Palette p;
+    p.bg = wxColour(15,17,23);
+    p.surface = wxColour(23,26,34);
+    p.surface2 = wxColour(30,34,44);
+    p.border = wxColour(51,56,68);
+    p.text = wxColour(242,244,249);
+    p.muted = wxColour(158,166,182);
+    p.primary = wxColour(118,106,255);
+    p.primarySoft = wxColour(54,48,88);
+    p.success = wxColour(43,202,133);
+    p.danger = wxColour(255,91,107);
+    return p;
 }
-wxPanel* C(wxWindow* p,wxColour c=CARD){auto* x=new wxPanel(p,wxID_ANY);x->SetBackgroundColour(c);return x;}
-wxBitmap MakeButtonBitmap(const wxString& label, const wxSize& size, bool primary){
- wxBitmap bmp(size.x,size.y,32); wxMemoryDC dc(bmp);
- dc.SetBackground(wxBrush(primary?BLUE:SURFACE)); dc.Clear();
- dc.SetPen(wxPen(primary?BLUE:BORDER,1)); if(!primary) dc.DrawRoundedRectangle(0,0,size.x-1,size.y-1,10);
- dc.SetTextForeground(primary?*wxWHITE:TEXTC);
- wxFont f=wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT); f.SetPointSize(9); f.SetWeight(wxFONTWEIGHT_BOLD); dc.SetFont(f);
- int tw=0,th=0; dc.GetTextExtent(label,&tw,&th); dc.DrawText(label,(size.x-tw)/2,(size.y-th)/2);
- dc.SelectObject(wxNullBitmap); return bmp;
+
+wxBitmap MakeButtonBitmap(const wxSize& size, const wxString& label,
+                          const Palette& p, bool primary, bool compact = false)
+{
+    wxBitmap bmp(size.x, size.y, 32);
+    wxMemoryDC dc(bmp);
+    const wxColour fill = primary ? p.primary : p.surface2;
+    const wxColour fg = primary ? *wxWHITE : p.text;
+    dc.SetBackground(wxBrush(fill));
+    dc.Clear();
+    dc.SetPen(wxPen(primary ? p.primary : p.border, 1));
+    dc.SetBrush(wxBrush(fill));
+    dc.DrawRoundedRectangle(wxRect(0, 0, size.x - 1, size.y - 1), 9);
+
+    wxFont font = wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT);
+    font.SetPointSize(std::max(8, font.GetPointSize() + (compact ? 0 : 1)));
+    font.SetWeight(primary ? wxFONTWEIGHT_SEMIBOLD : wxFONTWEIGHT_NORMAL);
+    dc.SetFont(font);
+    dc.SetTextForeground(fg);
+    dc.DrawLabel(label, wxRect(8, 0, size.x - 16, size.y),
+                 wxALIGN_CENTER | wxALIGN_CENTER_VERTICAL);
+    dc.SelectObject(wxNullBitmap);
+    return bmp;
 }
-wxButton* B(wxWindow* p,const wxString& s,int id=wxID_ANY,bool primary=false){
- auto sz=p->FromDIP(wxSize(primary?124:112,38));
- auto* x=new wxBitmapButton(p,id,MakeButtonBitmap(s,sz,primary),wxDefaultPosition,sz,wxBORDER_NONE);
- x->SetBackgroundColour(primary?BLUE:SURFACE); x->SetMinSize(sz); x->SetToolTip(s); return x;
+
+wxButton* MakeButton(wxWindow* parent, const wxString& label, const Palette& p,
+                     bool primary = false, const wxSize& logical = wxSize(120, 40))
+{
+    auto* b = new wxBitmapButton(parent, wxID_ANY,
+        MakeButtonBitmap(parent->FromDIP(logical), label, p, primary),
+        wxDefaultPosition, parent->FromDIP(logical), wxBORDER_NONE);
+    b->SetBackgroundColour(parent->GetBackgroundColour());
+    b->SetToolTip(label);
+    return b;
 }
-class PreviewGrid : public wxPanel { public: PreviewGrid(wxWindow* p):wxPanel(p,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxTRANSPARENT_WINDOW|wxNO_BORDER){SetBackgroundStyle(wxBG_STYLE_PAINT);Bind(wxEVT_PAINT,&PreviewGrid::Paint,this);Hide();} void SetMode(int m){mode=m;Refresh();} private: int mode=0; void Paint(wxPaintEvent&){wxAutoBufferedPaintDC dc(this);dc.Clear();if(mode==0)return;int w=GetClientSize().x,h=GetClientSize().y;dc.SetPen(wxPen(wxColour(255,255,255,70),1));if(mode==1||mode==2){dc.DrawLine(w/3,0,w/3,h);dc.DrawLine(2*w/3,0,2*w/3,h);dc.DrawLine(0,h/3,w,h/3);dc.DrawLine(0,2*h/3,w,2*h/3);}if(mode==2){dc.SetPen(wxPen(wxColour(255,255,255,120),1));dc.DrawLine(w/2,0,w/2,h);dc.DrawLine(0,h/2,w,h/2);}if(mode==3){dc.DrawLine(0,0,w,h);dc.DrawLine(w,0,0,h);}if(mode==4){for(int i=1;i<4;i++){dc.DrawLine(i*w/4,0,i*w/4,h);dc.DrawLine(0,i*h/4,w,i*h/4);}}if(mode==5)dc.DrawRectangle(w/12,h/12,5*w/6,5*h/6);}};
-wxButton* I(wxWindow* p,const wxString& f,const wxString& tip){
- wxImage im(wxString("res/")+f,wxBITMAP_TYPE_PNG); if(im.IsOk()){if(!im.HasAlpha())im.InitAlpha();auto*d=im.GetData();size_t n=(size_t)im.GetWidth()*im.GetHeight()*3;for(size_t i=0;i<n;i++)d[i]=255;}
- auto*x=new wxBitmapButton(p,wxID_ANY,im.IsOk()?wxBitmap(im):wxNullBitmap,wxDefaultPosition,p->FromDIP(wxSize(48,48)),wxBORDER_NONE);x->SetBackgroundColour(CARD2);x->SetToolTip(tip);return x;
+
+wxStaticText* Label(wxWindow* parent, const wxString& text, const Palette& p,
+                    int size = 10, bool bold = false)
+{
+    auto* t = new wxStaticText(parent, wxID_ANY, text);
+    wxFont f = wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT);
+    f.SetPointSize(size);
+    f.SetWeight(bold ? wxFONTWEIGHT_SEMIBOLD : wxFONTWEIGHT_NORMAL);
+    t->SetFont(f);
+    t->SetForegroundColour(p.text);
+    return t;
+}
+
+void SendMenu(wxWindow* host, int id, const wxString& value = wxEmptyString)
+{
+    wxCommandEvent e(wxEVT_MENU, id);
+    e.SetEventObject(host);
+    e.SetString(value);
+    host->ProcessWindowEvent(e);
+}
+
+void StyleChoice(wxChoice* c, const Palette& p)
+{
+    c->SetBackgroundColour(p.surface);
+    c->SetForegroundColour(p.text);
+    c->SetFont(wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT));
+}
+
+void StyleCheck(wxCheckBox* c, const Palette& p)
+{
+    c->SetBackgroundColour(p.surface);
+    c->SetForegroundColour(p.text);
+}
+
+void StylePanelTree(wxWindow* root, const Palette& p)
+{
+    if (!root) return;
+    root->SetBackgroundColour(p.surface);
+    if (auto* st = wxDynamicCast(root, wxStaticText))
+        st->SetForegroundColour(p.text);
+    if (auto* ch = wxDynamicCast(root, wxChoice))
+        StyleChoice(ch, p);
+    if (auto* cb = wxDynamicCast(root, wxCheckBox))
+        StyleCheck(cb, p);
+    for (auto* child : root->GetChildren())
+        StylePanelTree(child, p);
 }
 }
 
-Window::Window(Server::HostInfo hostinfo):wxFrame(nullptr,wxID_ANY,"MyCam Pro",wxDefaultPosition,wxDefaultSize,wxDEFAULT_FRAME_STYLE){
- wxString ep=wxStandardPaths::Get().GetExecutablePath(); wxFileName ef(ep); wxIcon icon(ef.GetPathWithSep()+wxString("res/nexora.ico"),wxBITMAP_TYPE_ICO);taskbarIcon=new wxTaskBarIcon();taskbarIcon->SetIcon(icon,"MyCam Pro");SetIcon(icon);
- taskbarIcon->Bind(wxEVT_TASKBAR_LEFT_DCLICK,&Window::MaximizeFromTaskbar,this);Bind(wxEVT_ICONIZE,&Window::MinimizeToTaskbar,this);
- auto* root=new wxPanel(this,wxID_ANY);root->SetBackgroundColour(BG);auto* top=new wxBoxSizer(wxVERTICAL);InitializeMenu(hostinfo);InitializeHeader(root,top);root->SetSizer(top);
- SetSizer(new wxBoxSizer(wxVERTICAL));GetSizer()->Add(root,1,wxEXPAND);SetMinClientSize(FromDIP(wxSize(1120,720)));SetClientSize(FromDIP(wxSize(1500,900)));Layout();root->Layout();CallAfter([this,root](){Layout();root->Layout();root->Refresh();});Center();
-}
-Window::~Window(){delete taskbarIcon;}
+Window::Window(Server::HostInfo hostinfo)
+    : wxFrame(nullptr, wxID_ANY, "MyCam Pro", wxDefaultPosition, wxDefaultSize,
+              wxDEFAULT_FRAME_STYLE)
+{
+    auto* root = new wxPanel(this, wxID_ANY);
+    root->SetBackgroundColour(LightPalette().bg);
+    auto* main = new wxBoxSizer(wxVERTICAL);
 
-void Window::InitializeMenu(Server::HostInfo hostinfo){
- auto* mb=new wxMenuBar();auto* m=new wxMenu();m->AppendCheckItem(MenuIDs::HIDE2TRAY,"Minimize to tray");m->AppendCheckItem(MenuIDs::SHOWSTATS,"Show stream statistics");m->AppendCheckItem(MenuIDs::SAVESTATE,"Remember device settings");
- auto* r=new wxMenu();r->AppendRadioItem(MenuIDs::DS_SD,"640 x 480");r->AppendRadioItem(MenuIDs::DS_HD,"1280 x 720");r->AppendRadioItem(MenuIDs::DS_FHD,"1920 x 1080");r->AppendRadioItem(MenuIDs::DS_QHD,"3840 x 2160");m->AppendSubMenu(r,"Virtual camera resolution");m->Append(wxID_EXIT,"Exit");mb->Append(m,"MyCam Pro");
- auto* c=new wxMenu();c->Append(MenuIDs::QR,"Show QR code");c->Append(MenuIDs::DEVICES,"Connected devices");c->AppendSeparator();c->Append(wxID_ANY,"Address: "+std::get<1>(hostinfo));c->Append(wxID_ANY,"Port: "+std::get<2>(hostinfo));mb->Append(c,"Connection");SetMenuBar(mb);
-}
+    wxIcon icon("res/nexora.ico", wxBITMAP_TYPE_ICO);
+    taskbarIcon = new wxTaskBarIcon();
+    taskbarIcon->SetIcon(icon, "MyCam Pro");
+    taskbarIcon->Bind(wxEVT_TASKBAR_LEFT_DCLICK, &Window::MaximizeFromTaskbar, this);
+    Bind(wxEVT_ICONIZE, &Window::MinimizeToTaskbar, this);
+    SetIcon(icon);
+    SetTitle("MyCam Pro");
 
-void Window::InitializeHeader(wxPanel* parent,wxBoxSizer* topsizer){
- auto* shell=new wxPanel(parent,wxID_ANY);shell->SetBackgroundColour(BG);auto* hs=new wxBoxSizer(wxHORIZONTAL);
- auto* side=new wxPanel(shell,wxID_ANY);side->SetBackgroundColour(SURFACE);side->SetMinSize(FromDIP(wxSize(250,-1)));auto* ss=new wxBoxSizer(wxVERTICAL);
- auto* brand=new wxBoxSizer(wxHORIZONTAL);brand->Add(T(side,U("◉"),17,true,BLUE),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,8);brand->Add(T(side,U("MyCam"),18,true,TEXTC),0,wxALIGN_CENTER_VERTICAL);brand->Add(T(side,U(" Pro"),18,true,BLUE),0,wxALIGN_CENTER_VERTICAL);ss->Add(brand,0,wxLEFT|wxTOP,22);ss->Add(T(side,U("ПРОФЕССИОНАЛЬНАЯ КАМЕРА"),8,true,MUTED),0,wxLEFT|wxTOP|wxBOTTOM,7);
- const char* labels[]={"Камера","Сцены","Эффекты","Запись","Виртуальная камера","Устройства","Настройки"};const char* icons[]={"●","▣","✦","▶","▣","▤","⚙"};std::vector<wxButton*> nav;
- for(int i=0;i<7;i++){auto*n=B(side,U((std::string(icons[i])+"   "+labels[i]).c_str()),i==5?MenuIDs::DEVICES:wxID_ANY,i==0);n->SetMinSize(FromDIP(wxSize(220,48)));n->SetFont(wxFontInfo(10).FaceName("Segoe UI"));nav.push_back(n);ss->Add(n,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,12);}
- ss->AddStretchSpacer();
- auto* device=C(side,wxColour(248,249,253));auto* ds=new wxBoxSizer(wxHORIZONTAL);ds->Add(T(device,U("▯"),25,true,TEXTC),0,wxALIGN_CENTER_VERTICAL|wxALL,10);auto* dt=new wxBoxSizer(wxVERTICAL);dt->Add(T(device,U("Xiaomi 14"),11,true,TEXTC),0);dt->Add(T(device,U("●  Подключено"),9,true,GREEN),0);dt->Add(T(device,U("🔋 87%  •  Wi‑Fi"),8,false,MUTED),0);ds->Add(dt,1,wxALIGN_CENTER_VERTICAL);ds->Add(T(device,U("›"),20,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,8);device->SetSizer(ds);ss->Add(device,0,wxEXPAND|wxALL,12);
- auto* pro=C(side,wxColour(245,243,255));auto* ps=new wxBoxSizer(wxVERTICAL);ps->Add(T(pro,U("♛  MyCam Pro"),11,true,TEXTC),0,wxALL,12);ps->Add(T(pro,U("Больше возможностей для контента"),8,false,MUTED),0,wxLEFT|wxRIGHT|wxBOTTOM,12);auto* upgrade=B(pro,U("Обновить до Pro"),wxID_ANY,true);upgrade->SetMinSize(FromDIP(wxSize(-1,36)));ps->Add(upgrade,0,wxEXPAND|wxALL,9);pro->SetSizer(ps);ss->Add(pro,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);side->SetSizer(ss);hs->Add(side,0,wxEXPAND);
+    InitializeMenu(hostinfo);
 
- auto* content=new wxPanel(shell,wxID_ANY);content->SetBackgroundColour(BG);auto* cs=new wxBoxSizer(wxVERTICAL);auto* head=new wxPanel(content,wxID_ANY);head->SetBackgroundColour(BG);auto* hr=new wxBoxSizer(wxHORIZONTAL);
- auto* dev=C(head,SURFACE);auto*d=new wxBoxSizer(wxHORIZONTAL);d->Add(T(dev,U("▯"),19,true,BLUE),0,wxALIGN_CENTER_VERTICAL|wxLEFT|wxRIGHT,12);auto*dtx=new wxBoxSizer(wxVERTICAL);dtx->Add(T(dev,U("Xiaomi 14"),10,true,TEXTC),0);dtx->Add(T(dev,U("●  Подключено"),8,true,GREEN),0);d->Add(dtx,0,wxALIGN_CENTER_VERTICAL);d->Add(T(dev,U("⌄"),13,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxLEFT,18);dev->SetSizer(d);dev->SetMinSize(FromDIP(wxSize(205,52)));hr->Add(dev,0,wxALIGN_CENTER_VERTICAL|wxLEFT,12);
- auto metric=[&](const wxString&a,const wxString&b){auto*p=C(head,SURFACE);auto*z=new wxBoxSizer(wxVERTICAL);z->Add(T(p,a,10,true,TEXTC),0,wxALIGN_CENTER|wxTOP,6);z->Add(T(p,b,7,false,MUTED),0,wxALIGN_CENTER|wxBOTTOM,6);p->SetSizer(z);p->SetMinSize(FromDIP(wxSize(95,52)));return p;};hr->Add(metric(U("▣ 1080p"),U("Full HD")),0,wxLEFT,7);hr->Add(metric(U("◉ 60 FPS"),U("Частота")),0,wxLEFT,5);hr->Add(metric(U("◌ 8.4 Mbps"),U("Битрейт")),0,wxLEFT,5);hr->Add(metric(U("⌁ Wi‑Fi"),U("28 ms")),0,wxLEFT,5);hr->AddStretchSpacer();auto*gear=B(head,U("⚙"),wxID_ANY);gear->SetMinSize(FromDIP(wxSize(42,42)));hr->Add(gear,0,wxALIGN_CENTER_VERTICAL|wxRIGHT,12);head->SetSizer(hr);cs->Add(head,0,wxEXPAND|wxTOP|wxBOTTOM,8);
- auto* pages=new wxPanel(content,wxID_ANY);pages->SetBackgroundColour(BG);auto*pgs=new wxBoxSizer(wxVERTICAL);pages->SetSizer(pgs);cs->Add(pages,1,wxEXPAND);content->SetSizer(cs);hs->Add(content,1,wxEXPAND);
+    // Top app bar
+    auto* top = new wxPanel(root, wxID_ANY);
+    top->SetBackgroundColour(LightPalette().surface);
+    auto* tr = new wxBoxSizer(wxHORIZONTAL);
+    auto* brand = new wxBoxSizer(wxVERTICAL);
+    auto* title = Label(top, "MYCAM PRO", LightPalette(), 15, true);
+    auto* subtitle = Label(top, "Professional camera studio", LightPalette(), 9, false);
+    subtitle->SetForegroundColour(LightPalette().muted);
+    brand->Add(title, 0, wxLEFT, FromDIP(4));
+    brand->Add(subtitle, 0, wxLEFT | wxTOP, FromDIP(4));
+    tr->Add(brand, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(18));
+    tr->AddStretchSpacer();
 
- auto* camera=new wxPanel(pages,wxID_ANY);camera->SetBackgroundColour(BG);auto*cam=new wxBoxSizer(wxVERTICAL);camera->SetSizer(cam);auto*row=new wxBoxSizer(wxHORIZONTAL);auto*center=new wxPanel(camera,wxID_ANY);center->SetBackgroundColour(BG);auto*cz=new wxBoxSizer(wxVERTICAL);
- auto*pv=C(center,SURFACE);auto*pvs=new wxBoxSizer(wxVERTICAL);auto*ph=new wxBoxSizer(wxHORIZONTAL);statusText=new wxStaticText(pv,wxID_ANY,U("●  LIVE  •  Xiaomi 14  •  1080p  •  60 FPS"));statusText->SetForegroundColour(GREEN);statusText->SetFont(wxFontInfo(9).FaceName("Segoe UI"));ph->Add(statusText,0,wxALIGN_CENTER_VERTICAL|wxLEFT,12);ph->AddStretchSpacer();auto*expand=B(pv,U("⛶"),wxID_ANY);expand->SetMinSize(FromDIP(wxSize(38,30)));ph->Add(expand,0,wxRIGHT,8);pvs->Add(ph,0,wxEXPAND|wxTOP|wxBOTTOM,7);
- canvas=new Canvas(pv,wxDefaultPosition,FromDIP(wxSize(800,470)));canvas->SetMinSize(FromDIP(wxSize(520,320)));canvas->SetBackgroundColour(wxColour(230,233,240));auto*grid=new PreviewGrid(canvas);grid->SetPosition(wxPoint(0,0));grid->SetSize(canvas->GetClientSize());canvas->Bind(wxEVT_SIZE,[grid](wxSizeEvent&e){grid->SetSize(e.GetSize());e.Skip();});pvs->Add(canvas,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
- auto*quick=new wxBoxSizer(wxHORIZONTAL);auto q=[&](const wxString&a,const wxString&b){auto*p=C(pv,wxColour(248,249,253));auto*z=new wxBoxSizer(wxVERTICAL);z->Add(T(p,a,8,false,MUTED),0,wxALIGN_CENTER|wxTOP,6);z->Add(T(p,b,9,true,TEXTC),0,wxALIGN_CENTER|wxBOTTOM,6);p->SetSizer(z);p->SetMinSize(FromDIP(wxSize(84,55)));return p;};quick->Add(q(U("↻ Поворот"),U("0°")),0,wxRIGHT,6);quick->Add(q(U("▣ Зеркало"),U("Вкл")),0,wxRIGHT,6);quick->Add(q(U("✦ Стабилизация"),U("Вкл")),0,wxRIGHT,6);quick->Add(q(U("HDR"),U("Выкл")),0,wxRIGHT,6);quick->Add(q(U("□ Сетка"),U("Выкл")),0,wxRIGHT,6);quick->Add(q(U("ϟ Фонарик"),U("Выкл")),0,wxRIGHT,6);pvs->Add(quick,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,9);pv->SetSizer(pvs);cz->Add(pv,1,wxEXPAND);
- auto*capture=C(center,SURFACE);auto*cr=new wxBoxSizer(wxHORIZONTAL);snapshotButton=B(capture,U("▣  Сделать снимок"),wxID_ANY,false);snapshotButton->SetMinSize(FromDIP(wxSize(170,46)));cr->Add(snapshotButton,0,wxRIGHT,7);cr->AddStretchSpacer();auto*record=B(capture,U("●  Начать запись"),wxID_ANY,true);record->SetMinSize(FromDIP(wxSize(210,46)));cr->Add(record,0,wxRIGHT,7);auto*mic=B(capture,U("♩  Микрофон  ⌄"),wxID_ANY,false);mic->SetMinSize(FromDIP(wxSize(165,46)));cr->Add(mic,0,wxRIGHT,9);capture->SetSizer(cr);cz->Add(capture,0,wxEXPAND|wxTOP,8);
- auto*scene=C(center,SURFACE);auto*scs=new wxBoxSizer(wxVERTICAL);auto*sch=new wxBoxSizer(wxHORIZONTAL);sch->Add(T(scene,U("Сцены"),13,true,TEXTC),0,wxALIGN_CENTER_VERTICAL|wxLEFT,12);auto*plus=B(scene,U("+"),wxID_ANY,false);plus->SetMinSize(FromDIP(wxSize(36,32)));sch->Add(plus,0,wxLEFT,9);sch->AddStretchSpacer();scs->Add(sch,0,wxEXPAND|wxTOP,7);auto*sr=new wxBoxSizer(wxHORIZONTAL);const wxString sn[]={U("Основная"),U("Стрим"),U("Рабочий стол"),U("Игра"),U("Интервью")};for(int i=0;i<5;i++){auto*p=C(scene,i==0?wxColour(239,240,255):wxColour(248,249,253));auto*z=new wxBoxSizer(wxVERTICAL);auto*t=C(p,i==0?wxColour(224,228,255):wxColour(231,234,241));t->SetMinSize(FromDIP(wxSize(130,58)));t->SetSizer(new wxBoxSizer(wxVERTICAL));t->GetSizer()->Add(T(t,i==0?U("● LIVE"):U("▣"),14,true,i==0?BLUE:MUTED),1,wxALIGN_CENTER);z->Add(t,0,wxEXPAND);z->Add(T(p,sn[i],8,true,TEXTC),0,wxALL,6);p->SetSizer(z);p->SetMinSize(FromDIP(wxSize(130,82)));sr->Add(p,1,wxRIGHT,6);}auto*ns=C(scene,wxColour(249,250,253));auto*nz=new wxBoxSizer(wxVERTICAL);nz->Add(T(ns,U("+"),20,true,BLUE),1,wxALIGN_CENTER);nz->Add(T(ns,U("Новая сцена"),8,false,MUTED),0,wxALIGN_CENTER|wxBOTTOM,7);ns->SetSizer(nz);ns->SetMinSize(FromDIP(wxSize(105,82)));sr->Add(ns,0,wxRIGHT,9);scs->Add(sr,0,wxEXPAND|wxALL,9);scene->SetSizer(scs);cz->Add(scene,0,wxEXPAND|wxTOP,8);center->SetSizer(cz);row->Add(center,1,wxEXPAND|wxRIGHT,9);
+    statusText = Label(top, "●  Не подключено", LightPalette(), 10, true);
+    statusText->SetForegroundColour(LightPalette().muted);
+    tr->Add(statusText, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(18));
 
- auto*rp=C(camera,SURFACE);rp->SetMinSize(FromDIP(wxSize(335,-1)));auto*rs=new wxBoxSizer(wxVERTICAL);auto*rt=new wxBoxSizer(wxHORIZONTAL);rt->Add(T(rp,U("Настройки камеры"),14,true,TEXTC),0,wxALIGN_CENTER_VERTICAL|wxLEFT,13);rt->AddStretchSpacer();auto*reset=B(rp,U("Сбросить"),wxID_ANY,false);reset->SetMinSize(FromDIP(wxSize(82,30)));rt->Add(reset,0,wxRIGHT,8);rs->Add(rt,0,wxEXPAND|wxTOP|wxBOTTOM,10);
- auto addChoice=[&](const wxString&l,const wxString&v){rs->Add(T(rp,l,8,false,MUTED),0,wxLEFT|wxRIGHT|wxTOP,7);auto*x=new wxChoice(rp,wxID_ANY);x->Append(v);x->SetSelection(0);x->SetMinSize(FromDIP(wxSize(-1,36)));rs->Add(x,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,5);};
- rs->Add(T(rp,U("Источник"),8,false,MUTED),0,wxLEFT|wxRIGHT,13);wxArrayString ch;ch.Add(U("Xiaomi 14 (Wi‑Fi)"));ch.Add(U("Камера ПК"));sourceChoice=new wxChoice(rp,wxID_ANY,wxDefaultPosition,wxDefaultSize,ch);sourceChoice->SetSelection(0);sourceChoice->SetMinSize(FromDIP(wxSize(-1,36)));rs->Add(sourceChoice,0,wxEXPAND|wxALL,7);addChoice(U("Разрешение"),U("1920 × 1080 (Full HD)"));addChoice(U("FPS"),U("60"));
- rs->Add(T(rp,U("Битрейт (Mbps)"),8,false,MUTED),0,wxLEFT|wxRIGHT|wxTOP,7);auto*bitrate=new wxSlider(rp,wxID_ANY,84,10,120);rs->Add(bitrate,0,wxEXPAND|wxLEFT|wxRIGHT,9);rs->Add(T(rp,U("8.4 Mbps"),8,true,TEXTC),0,wxALIGN_RIGHT|wxRIGHT,10);rs->Add(T(rp,U("Экспозиция"),8,false,MUTED),0,wxLEFT|wxRIGHT|wxTOP,7);auto*exposure=new wxSlider(rp,wxID_ANY,50,0,100);rs->Add(exposure,0,wxEXPAND|wxLEFT|wxRIGHT,9);rs->Add(T(rp,U("0"),8,true,TEXTC),0,wxALIGN_RIGHT|wxRIGHT,10);addChoice(U("Баланс белого"),U("Авто"));addChoice(U("Фокус"),U("Авто"));
- streamOptionsButton=B(rp,U("Дополнительно  ⌄"),wxID_ANY,false);streamOptionsButton->SetMinSize(FromDIP(wxSize(-1,38)));rs->Add(streamOptionsButton,0,wxEXPAND|wxALL,9);
- auto*vc=C(rp,wxColour(245,247,253));auto*vcs=new wxBoxSizer(wxVERTICAL);vcs->Add(T(vc,U("●  Виртуальная камера"),10,true,TEXTC),0,wxALL,10);vcs->Add(T(vc,U("▯  MyCam Pro Virtual Camera"),9,false,TEXTC),0,wxLEFT|wxRIGHT|wxBOTTOM,8);vcs->Add(T(vc,U("●  Готово к использованию"),8,true,GREEN),0,wxLEFT|wxRIGHT|wxBOTTOM,10);vc->SetSizer(vcs);rs->Add(vc,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,9);
- auto*audio=C(rp,wxColour(248,249,253));auto*aus=new wxBoxSizer(wxVERTICAL);aus->Add(T(audio,U("♩  Аудио"),10,true,TEXTC),0,wxALL,9);auto*micC=new wxChoice(audio,wxID_ANY);micC->Append(U("Микрофон (Xiaomi 14)"));micC->SetSelection(0);aus->Add(micC,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,7);auto*vol=new wxSlider(audio,wxID_ANY,88,0,100);aus->Add(vol,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,7);audio->SetSizer(aus);rs->Add(audio,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,9);rp->SetSizer(rs);row->Add(rp,0,wxEXPAND);cam->Add(row,1,wxEXPAND);
- auto*bottom=C(camera,SURFACE);auto*bs=new wxBoxSizer(wxHORIZONTAL);bs->Add(T(bottom,U("CPU 12%"),8,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxLEFT,12);bs->Add(T(bottom,U("RAM 846 MB"),8,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxLEFT,18);bs->Add(T(bottom,U("FPS 60"),8,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxLEFT,18);bs->Add(T(bottom,U("Задержка 28 ms"),8,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxLEFT,18);bs->Add(T(bottom,U("Поток 8.4 Mbps"),8,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxLEFT,18);bs->AddStretchSpacer();bs->Add(T(bottom,U("● Xiaomi 14 подключено"),8,true,GREEN),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,14);bs->Add(T(bottom,U("v1.0.0"),8,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,10);bottom->SetSizer(bs);cam->Add(bottom,0,wxEXPAND|wxTOP,7);
+    auto* recordTop = MakeButton(top, "●  REC", LightPalette(), true, wxSize(88, 38));
+    recordTop->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { SendMenu(this, 200); });
+    tr->Add(recordTop, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
 
- auto page=[&](const wxString&t,const wxString&d){auto*p=new wxPanel(pages,wxID_ANY);p->SetBackgroundColour(BG);auto*s=new wxBoxSizer(wxVERTICAL);auto*c=C(p,SURFACE);auto*z=new wxBoxSizer(wxVERTICAL);z->Add(T(c,t,22,true,TEXTC),0,wxALL,22);z->Add(T(c,d,10,false,MUTED),0,wxLEFT|wxRIGHT|wxBOTTOM,22);auto*x=B(c,U("Открыть настройки"),wxID_ANY,true);z->Add(x,0,wxLEFT|wxRIGHT|wxBOTTOM,22);c->SetSizer(z);s->Add(c,0,wxEXPAND);p->SetSizer(s);return p;};
- auto*scenes=page(U("Сцены"),U("Управление готовыми сценами и быстрым переключением."));auto*effects=page(U("Эффекты"),U("Фильтры, цветокоррекция, HDR, резкость и размытие."));auto*recording=page(U("Запись"),U("Качество, кодек, путь сохранения и горячие клавиши."));auto*virtualCamera=page(U("Виртуальная камера"),U("MyCam Pro Virtual Camera для OBS, Zoom, Discord и других приложений."));auto*devices=page(U("Устройства"),U("Wi‑Fi / USB / QR, подключенные телефоны и доверенные устройства."));auto*settings=page(U("Настройки"),U("Тема, производительность, хранилище, уведомления и диагностика."));
-    {
-        auto* themeCard=C(settings,SURFACE); auto* ts=new wxBoxSizer(wxHORIZONTAL);
-        ts->Add(T(themeCard,U("Тема"),11,true,TEXTC),0,wxALIGN_CENTER_VERTICAL|wxLEFT,16);
-        ts->Add(T(themeCard,U("Светлая / Тёмная / Системная"),9,false,MUTED),0,wxALIGN_CENTER_VERTICAL|wxLEFT,12);
-        ts->AddStretchSpacer();
-        auto* theme=new wxChoice(themeCard,wxID_ANY); theme->Append(U("Светлая")); theme->Append(U("Тёмная")); theme->Append(U("Системная")); theme->SetSelection(0);
-        theme->SetMinSize(FromDIP(wxSize(180,38))); ts->Add(theme,0,wxALIGN_CENTER_VERTICAL|wxRIGHT,16);
-        themeCard->SetSizer(ts); themeCard->SetMinSize(FromDIP(wxSize(-1,58)));
-        theme->Bind(wxEVT_CHOICE,[settings](wxCommandEvent& e){
-            const bool dark=e.GetSelection()==1;
-            const wxColour bg=dark?wxColour(20,24,34):BG, fg=dark?wxColour(242,245,251):TEXTC, card=dark?wxColour(30,36,50):SURFACE;
-            std::function<void(wxWindow*)> paint=[&](wxWindow* w){ w->SetBackgroundColour(card); w->SetForegroundColour(fg); for(auto* child:w->GetChildren()) paint(child); };
-            paint(settings); settings->SetBackgroundColour(bg); settings->Refresh(); settings->Layout();
+    auto* devicesTop = MakeButton(top, "Устройства", LightPalette(), false, wxSize(112, 38));
+    devicesTop->SetId(MenuIDs::DEVICES);
+    tr->Add(devicesTop, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(18));
+    top->SetSizer(tr);
+    tr->SetMinSize(-1, FromDIP(68));
+    main->Add(top, 0, wxEXPAND);
+
+    // Body
+    auto* body = new wxBoxSizer(wxHORIZONTAL);
+    auto* sidebar = new wxPanel(root, wxID_ANY);
+    sidebar->SetBackgroundColour(LightPalette().surface);
+    sidebar->SetMinSize(FromDIP(wxSize(222, -1)));
+    auto* sr = new wxBoxSizer(wxVERTICAL);
+    sr->AddSpacer(FromDIP(20));
+
+    auto* sideCaption = Label(sidebar, "СТУДИЯ", LightPalette(), 9, true);
+    sideCaption->SetForegroundColour(LightPalette().muted);
+    sr->Add(sideCaption, 0, wxLEFT | wxBOTTOM, FromDIP(18));
+
+    auto* book = new wxSimplebook(root, wxID_ANY);
+    book->SetBackgroundColour(LightPalette().bg);
+
+    struct NavItem { wxString title; wxString hint; int page; };
+    const std::vector<NavItem> nav = {
+        {"Камера", "Live preview", 0},
+        {"Сцены", "Presets", 1},
+        {"Изображение", "Correction", 2},
+        {"Эффекты", "Filters", 3},
+        {"Запись", "Video", 4},
+        {"Устройства", "Phones", 5},
+        {"Настройки", "System", 6}
+    };
+
+    std::vector<wxButton*> navButtons;
+    for (size_t i = 0; i < nav.size(); ++i) {
+        auto* b = MakeButton(sidebar, nav[i].title, LightPalette(),
+                             i == 0, wxSize(190, 42));
+        b->SetToolTip(nav[i].hint);
+        const int page = nav[i].page;
+        b->Bind(wxEVT_BUTTON, [book, page, navButtons](wxCommandEvent&) {
+            book->ChangeSelection(page);
+            wxUnusedVar(navButtons);
         });
-        settings->GetSizer()->Add(themeCard,0,wxEXPAND|wxBOTTOM,10);
+        navButtons.push_back(b);
+        sr->Add(b, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     }
- std::vector<wxPanel*>pp={camera,scenes,effects,recording,virtualCamera,devices,settings};for(auto*x:pp)pgs->Add(x,1,wxEXPAND);for(size_t i=1;i<pp.size();i++)pp[i]->Hide();for(size_t i=0;i<nav.size();i++)nav[i]->Bind(wxEVT_BUTTON,[pages,pp,nav,i](wxCommandEvent&){for(size_t j=0;j<pp.size();j++){pp[j]->Show(i==j);nav[j]->SetBackgroundColour(i==j?wxColour(238,239,255):CARD2);}pages->Layout();});
- statsText=new wxStaticText(bottom,wxID_ANY,U("60 FPS • 8.4 Mbps • 28 ms"));statsText->SetForegroundColour(MUTED);
- // Real engine-connected controls remain visible. No mock controls are hidden over the runtime.
- rotateLeftButton=B(pv,U("↶  Поворот"),wxID_ANY);
- rotateRightButton=B(pv,U("↷"),wxID_ANY);
- flipButton=B(pv,U("Зеркало"),wxID_ANY);
- flipVerticalButton=B(pv,U("⇵"),wxID_ANY);
- zoomOutButton=B(pv,U("−"),wxID_ANY);
- zoomInButton=B(pv,U("+"),wxID_ANY);
- torchButton=B(pv,U("ϟ  Фонарик"),wxID_ANY);
- swapButton=B(pv,U("⇄  Камера"),wxID_ANY);
- adjustmentsButton=B(pv,U("✦  Изображение"),wxID_ANY);
- zoomLevelLabel=T(pv,U("1.0×"),9,true,TEXTC);
- shell->SetSizer(hs);topsizer->Add(shell,1,wxEXPAND);
+
+    sr->AddStretchSpacer();
+    auto* sideInfo = new wxPanel(sidebar, wxID_ANY);
+    sideInfo->SetBackgroundColour(LightPalette().surface2);
+    auto* sir = new wxBoxSizer(wxVERTICAL);
+    sir->Add(Label(sideInfo, "Виртуальная камера", LightPalette(), 9, true),
+             0, wxLEFT | wxTOP, FromDIP(12));
+    auto* vc = Label(sideInfo, "MyCam Pro Camera", LightPalette(), 10, true);
+    sir->Add(vc, 0, wxLEFT | wxTOP, FromDIP(12));
+    auto* vcState = Label(sideInfo, "● Готова", LightPalette(), 9, false);
+    vcState->SetForegroundColour(LightPalette().success);
+    sir->Add(vcState, 0, wxLEFT | wxTOP | wxBOTTOM, FromDIP(12));
+    sideInfo->SetSizer(sir);
+    sr->Add(sideInfo, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(14));
+    sidebar->SetSizer(sr);
+    body->Add(sidebar, 0, wxEXPAND);
+
+    // Camera page
+    auto* cameraPage = new wxPanel(book, wxID_ANY);
+    cameraPage->SetBackgroundColour(LightPalette().bg);
+    auto* cameraRoot = new wxBoxSizer(wxHORIZONTAL);
+
+    auto* center = new wxPanel(cameraPage, wxID_ANY);
+    center->SetBackgroundColour(LightPalette().bg);
+    auto* cr = new wxBoxSizer(wxVERTICAL);
+
+    auto* deviceCard = new wxPanel(center, wxID_ANY);
+    deviceCard->SetBackgroundColour(LightPalette().surface);
+    auto* dcr = new wxBoxSizer(wxHORIZONTAL);
+    dcr->Add(Label(deviceCard, "КАМЕРА", LightPalette(), 9, true),
+             0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
+    sourceChoice = new wxChoice(deviceCard, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                                1, new wxString[1]{ "Поиск устройств…" });
+    sourceChoice->SetMinSize(FromDIP(wxSize(260, 38)));
+    sourceChoice->SetSelection(0);
+    StyleChoice(sourceChoice, LightPalette());
+    dcr->Add(sourceChoice, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(14));
+
+    statsText = Label(deviceCard, "1080p  •  30 fps  •  -- Mbps", LightPalette(), 9, false);
+    statsText->SetForegroundColour(LightPalette().muted);
+    statsText->Show(Settings::Get("SHOW_STATS") == 1);
+    dcr->AddStretchSpacer();
+    dcr->Add(statsText, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
+
+    streamOptionsButton = MakeButton(deviceCard, "⚙", LightPalette(), false, wxSize(42, 38));
+    streamOptionsButton->SetToolTip("Параметры потока");
+    dcr->Add(streamOptionsButton, 0, wxALIGN_CENTER_VERTICAL);
+    deviceCard->SetSizer(dcr);
+    cr->Add(deviceCard, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+
+    auto* previewCard = new wxPanel(center, wxID_ANY);
+    previewCard->SetBackgroundColour(wxColour(10,12,18));
+    auto* pr = new wxBoxSizer(wxVERTICAL);
+    canvas = new Canvas(previewCard, wxDefaultPosition, FromDIP(wxSize(720, 440)));
+    canvas->SetBackgroundColour(wxColour(10,12,18));
+    pr->Add(canvas, 1, wxEXPAND | wxALL, FromDIP(1));
+    previewCard->SetSizer(pr);
+    cr->Add(previewCard, 1, wxEXPAND | wxBOTTOM, FromDIP(12));
+
+    auto* quick = new wxPanel(center, wxID_ANY);
+    quick->SetBackgroundColour(LightPalette().surface);
+    auto* qr = new wxBoxSizer(wxHORIZONTAL);
+    rotateLeftButton = MakeButton(quick, "↶", LightPalette(), false, wxSize(48, 42));
+    rotateRightButton = MakeButton(quick, "↷", LightPalette(), false, wxSize(48, 42));
+    flipButton = MakeButton(quick, "↔", LightPalette(), false, wxSize(48, 42));
+    flipVerticalButton = MakeButton(quick, "↕", LightPalette(), false, wxSize(48, 42));
+    zoomOutButton = MakeButton(quick, "−", LightPalette(), false, wxSize(48, 42));
+    zoomLevelLabel = Label(quick, "1.0×", LightPalette(), 10, true);
+    zoomLevelLabel->SetMinSize(FromDIP(wxSize(52, 42)));
+    zoomInButton = MakeButton(quick, "+", LightPalette(), false, wxSize(48, 42));
+    torchButton = MakeButton(quick, "☼", LightPalette(), false, wxSize(48, 42));
+    swapButton = MakeButton(quick, "⇄", LightPalette(), false, wxSize(48, 42));
+    snapshotButton = MakeButton(quick, "Фото", LightPalette(), true, wxSize(72, 42));
+    adjustmentsButton = MakeButton(quick, "Изображение", LightPalette(), false, wxSize(112, 42));
+
+    for (auto* b : {rotateLeftButton, rotateRightButton, flipButton, flipVerticalButton}) {
+        qr->Add(b, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(5));
+    }
+    qr->AddSpacer(FromDIP(8));
+    qr->Add(zoomOutButton, 0, wxALIGN_CENTER_VERTICAL);
+    qr->Add(zoomLevelLabel, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(2));
+    qr->Add(zoomInButton, 0, wxALIGN_CENTER_VERTICAL);
+    qr->AddStretchSpacer();
+    qr->Add(torchButton, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(5));
+    qr->Add(swapButton, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(5));
+    qr->Add(snapshotButton, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(5));
+    qr->Add(adjustmentsButton, 0, wxALIGN_CENTER_VERTICAL);
+    quick->SetSizer(qr);
+    cr->Add(quick, 0, wxEXPAND);
+
+    auto* streamInfo = new wxPanel(center, wxID_ANY);
+    streamInfo->SetBackgroundColour(LightPalette().surface);
+    auto* sir2 = new wxBoxSizer(wxHORIZONTAL);
+    auto* s1 = Label(streamInfo, "Wi‑Fi", LightPalette(), 9, true);
+    auto* s2 = Label(streamInfo, " 1080p60", LightPalette(), 9, false);
+    auto* s3 = Label(streamInfo, "  •  8 Mbps", LightPalette(), 9, false);
+    auto* s4 = Label(streamInfo, "  •  28 ms", LightPalette(), 9, false);
+    s1->SetForegroundColour(LightPalette().success);
+    s2->SetForegroundColour(LightPalette().muted);
+    s3->SetForegroundColour(LightPalette().muted);
+    s4->SetForegroundColour(LightPalette().muted);
+    sir2->Add(s1, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
+    sir2->Add(s2, 0, wxALIGN_CENTER_VERTICAL);
+    sir2->Add(s3, 0, wxALIGN_CENTER_VERTICAL);
+    sir2->Add(s4, 0, wxALIGN_CENTER_VERTICAL);
+    sir2->AddStretchSpacer();
+    sir2->Add(Label(streamInfo, "Виртуальная камера  •  1920×1080", LightPalette(), 9, false),
+              0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
+    streamInfo->SetSizer(sir2);
+    cr->Add(streamInfo, 0, wxEXPAND | wxTOP, FromDIP(12));
+
+    center->SetSizer(cr);
+    cameraRoot->Add(center, 1, wxEXPAND | wxRIGHT, FromDIP(12));
+
+    // Right settings rail
+    auto* right = new wxPanel(cameraPage, wxID_ANY);
+    right->SetBackgroundColour(LightPalette().surface);
+    right->SetMinSize(FromDIP(wxSize(310, -1)));
+    auto* rr = new wxBoxSizer(wxVERTICAL);
+    rr->Add(Label(right, "Настройки камеры", LightPalette(), 14, true),
+            0, wxALL, FromDIP(18));
+
+    auto addChoice = [&](const wxString& caption, const wxArrayString& values) {
+        rr->Add(Label(right, caption, LightPalette(), 9, true),
+                0, wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
+        auto* c = new wxChoice(right, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 38)), values);
+        c->SetSelection(0);
+        StyleChoice(c, LightPalette());
+        rr->Add(c, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+        return c;
+    };
+
+    wxArrayString resolutions;
+    resolutions.Add("1920 × 1080");
+    resolutions.Add("1280 × 720");
+    resolutions.Add("640 × 480");
+    auto* resolutionChoice = addChoice("Разрешение", resolutions);
+    resolutionChoice->Bind(wxEVT_CHOICE, [this](wxCommandEvent& e) {
+        SendMenu(this, 201, e.GetString());
+    });
+
+    wxArrayString fpsValues;
+    fpsValues.Add("60 FPS"); fpsValues.Add("30 FPS"); fpsValues.Add("24 FPS");
+    auto* fpsChoice = addChoice("Частота кадров", fpsValues);
+    fpsChoice->Bind(wxEVT_CHOICE, [this](wxCommandEvent& e) {
+        SendMenu(this, 202, e.GetString());
+    });
+
+    wxArrayString bitrateValues;
+    bitrateValues.Add("8 Mbps"); bitrateValues.Add("6 Mbps"); bitrateValues.Add("4 Mbps"); bitrateValues.Add("2 Mbps");
+    auto* bitrateChoice = addChoice("Битрейт", bitrateValues);
+    bitrateChoice->Bind(wxEVT_CHOICE, [this](wxCommandEvent& e) {
+        SendMenu(this, 203, e.GetString());
+    });
+
+    rr->Add(Label(right, "Фокус", LightPalette(), 9, true),
+            0, wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
+    wxArrayString focusValues;
+    focusValues.Add("Авто"); focusValues.Add("Непрерывный"); focusValues.Add("Фиксированный");
+    auto* focusChoice = new wxChoice(right, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 38)), focusValues);
+    focusChoice->SetSelection(0);
+    StyleChoice(focusChoice, LightPalette());
+    rr->Add(focusChoice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+    focusChoice->Bind(wxEVT_CHOICE, [this](wxCommandEvent& e) {
+        SendMenu(this, 204, e.GetString());
+    });
+
+    auto* stabilization = new wxCheckBox(right, wxID_ANY, "Стабилизация");
+    StyleCheck(stabilization, LightPalette());
+    rr->Add(stabilization, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
+    stabilization->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent& e) {
+        SendMenu(this, 205, e.IsChecked() ? "1" : "0");
+    });
+
+    auto* h265 = new wxCheckBox(right, wxID_ANY, "HEVC / H.265");
+    StyleCheck(h265, LightPalette());
+    rr->Add(h265, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    h265->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent& e) {
+        SendMenu(this, 206, e.IsChecked() ? "1" : "0");
+    });
+
+    auto* advanced = MakeButton(right, "Расширенные параметры потока", LightPalette(), false, wxSize(260, 42));
+    advanced->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { streamOptionsButton->Command(wxEVT_BUTTON); });
+    rr->Add(advanced, 0, wxEXPAND | wxALL, FromDIP(18));
+    rr->AddStretchSpacer();
+
+    auto* note = Label(right, "Все изменения применяются к подключённому телефону сразу.", LightPalette(), 8, false);
+    note->SetForegroundColour(LightPalette().muted);
+    rr->Add(note, 0, wxALL, FromDIP(18));
+    right->SetSizer(rr);
+    cameraRoot->Add(right, 0, wxEXPAND);
+    cameraPage->SetSizer(cameraRoot);
+
+    // Scenes page
+    auto* scenesPage = new wxPanel(book, wxID_ANY);
+    scenesPage->SetBackgroundColour(LightPalette().bg);
+    auto* scenesSizer = new wxBoxSizer(wxVERTICAL);
+    scenesSizer->Add(Label(scenesPage, "Сцены", LightPalette(), 20, true), 0, wxALL, FromDIP(24));
+    scenesSizer->Add(Label(scenesPage, "Быстрые пресеты для съёмки. Применяются одним нажатием.", LightPalette(), 10),
+                     0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(24));
+    for (const auto& scene : std::vector<std::pair<wxString,int>>{
+        {"Студия • 1080p / 60 FPS", 210},
+        {"Портрет • 1080p / 30 FPS", 211},
+        {"Ночь • 720p / 30 FPS", 212},
+        {"Презентация • 720p / 24 FPS", 213}})
+    {
+        auto* b = MakeButton(scenesPage, scene.first, LightPalette(), false, wxSize(520, 52));
+        b->Bind(wxEVT_BUTTON, [this, id=scene.second](wxCommandEvent&) { SendMenu(this, id); });
+        scenesSizer->Add(b, 0, wxLEFT | wxBOTTOM, FromDIP(12));
+    }
+    scenesSizer->AddStretchSpacer();
+    scenesPage->SetSizer(scenesSizer);
+
+    // Image page
+    auto* imagePage = new wxPanel(book, wxID_ANY);
+    imagePage->SetBackgroundColour(LightPalette().bg);
+    auto* imageSizer = new wxBoxSizer(wxVERTICAL);
+    imageSizer->Add(Label(imagePage, "Изображение", LightPalette(), 20, true), 0, wxALL, FromDIP(24));
+    imageSizer->Add(Label(imagePage, "Коррекция цвета, экспозиции и резкости", LightPalette(), 10),
+                    0, wxLEFT | wxBOTTOM, FromDIP(24));
+    auto* openAdjust = MakeButton(imagePage, "Открыть редактор изображения", LightPalette(), true, wxSize(300, 48));
+    openAdjust->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { adjustmentsButton->Command(wxEVT_BUTTON); });
+    imageSizer->Add(openAdjust, 0, wxLEFT | wxBOTTOM, FromDIP(20));
+    for (const auto& row : std::vector<wxString>{"Экспозиция", "Контраст", "Насыщенность", "Резкость"}) {
+        imageSizer->Add(Label(imagePage, row, LightPalette(), 9, true), 0, wxLEFT | wxTOP, FromDIP(20));
+        auto* slider = new wxSlider(imagePage, wxID_ANY, 50, 0, 100, wxDefaultPosition,
+                                    FromDIP(wxSize(520, 34)), wxSL_HORIZONTAL);
+        imageSizer->Add(slider, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    }
+    imageSizer->AddStretchSpacer();
+    imagePage->SetSizer(imageSizer);
+
+    // Effects page
+    auto* effectsPage = new wxPanel(book, wxID_ANY);
+    effectsPage->SetBackgroundColour(LightPalette().bg);
+    auto* effectsSizer = new wxBoxSizer(wxVERTICAL);
+    effectsSizer->Add(Label(effectsPage, "Эффекты", LightPalette(), 20, true), 0, wxALL, FromDIP(24));
+    effectsSizer->Add(Label(effectsPage, "Фильтры устройства доступны в реальном редакторе.", LightPalette(), 10),
+                      0, wxLEFT | wxBOTTOM, FromDIP(20));
+    for (const auto& effect : std::vector<wxString>{"Без фильтра", "Кино", "Ч/Б", "Винтаж"}) {
+        auto* b = MakeButton(effectsPage, effect, LightPalette(), false, wxSize(300, 46));
+        b->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { adjustmentsButton->Command(wxEVT_BUTTON); });
+        effectsSizer->Add(b, 0, wxLEFT | wxBOTTOM, FromDIP(10));
+    }
+    effectsSizer->AddStretchSpacer();
+    effectsPage->SetSizer(effectsSizer);
+
+    // Recording page
+    auto* recordingPage = new wxPanel(book, wxID_ANY);
+    recordingPage->SetBackgroundColour(LightPalette().bg);
+    auto* recordingSizer = new wxBoxSizer(wxVERTICAL);
+    recordingSizer->Add(Label(recordingPage, "Запись", LightPalette(), 20, true), 0, wxALL, FromDIP(24));
+    recordingSizer->Add(Label(recordingPage, "Видео сохраняется в Документы → MyCam Pro → Recordings.", LightPalette(), 10),
+                        0, wxLEFT | wxBOTTOM, FromDIP(24));
+    auto* recButton = MakeButton(recordingPage, "●  Начать запись", LightPalette(), true, wxSize(260, 54));
+    recButton->Bind(wxEVT_BUTTON, [this, recButton](wxCommandEvent&) {
+        SendMenu(this, 200);
+        recButton->SetBitmapLabel(MakeButtonBitmap(recButton->GetSize(), "●  REC", LightPalette(), true));
+    });
+    recordingSizer->Add(recButton, 0, wxLEFT | wxBOTTOM, FromDIP(18));
+    auto* snapshot = MakeButton(recordingPage, "Сделать снимок", LightPalette(), false, wxSize(260, 48));
+    snapshot->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { snapshotButton->Command(wxEVT_BUTTON); });
+    recordingSizer->Add(snapshot, 0, wxLEFT | wxBOTTOM, FromDIP(12));
+    recordingSizer->AddStretchSpacer();
+    recordingPage->SetSizer(recordingSizer);
+
+    // Devices page
+    auto* devicesPage = new wxPanel(book, wxID_ANY);
+    devicesPage->SetBackgroundColour(LightPalette().bg);
+    auto* devicesSizer = new wxBoxSizer(wxVERTICAL);
+    devicesSizer->Add(Label(devicesPage, "Устройства", LightPalette(), 20, true), 0, wxALL, FromDIP(24));
+    devicesSizer->Add(Label(devicesPage, "Подключённые телефоны и Wi‑Fi соединение.", LightPalette(), 10),
+                      0, wxLEFT | wxBOTTOM, FromDIP(24));
+    auto* showDevices = MakeButton(devicesPage, "Управление устройствами", LightPalette(), true, wxSize(300, 48));
+    showDevices->SetId(MenuIDs::DEVICES);
+    devicesSizer->Add(showDevices, 0, wxLEFT | wxBOTTOM, FromDIP(18));
+    auto* showQr = MakeButton(devicesPage, "Показать QR для подключения", LightPalette(), false, wxSize(300, 48));
+    showQr->SetId(MenuIDs::QR);
+    devicesSizer->Add(showQr, 0, wxLEFT | wxBOTTOM, FromDIP(12));
+    devicesSizer->AddStretchSpacer();
+    devicesPage->SetSizer(devicesSizer);
+
+    // Settings page
+    auto* settingsPage = new wxPanel(book, wxID_ANY);
+    settingsPage->SetBackgroundColour(LightPalette().bg);
+    auto* settingsSizer = new wxBoxSizer(wxVERTICAL);
+    settingsSizer->Add(Label(settingsPage, "Настройки", LightPalette(), 20, true), 0, wxALL, FromDIP(24));
+    settingsSizer->Add(Label(settingsPage, "Внешний вид и поведение MyCam Pro", LightPalette(), 10),
+                       0, wxLEFT | wxBOTTOM, FromDIP(24));
+    settingsSizer->Add(Label(settingsPage, "Тема", LightPalette(), 9, true), 0, wxLEFT | wxTOP, FromDIP(20));
+    wxArrayString themes; themes.Add("Светлая"); themes.Add("Тёмная"); themes.Add("Системная");
+    auto* themeChoice = new wxChoice(settingsPage, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(300, 40)), themes);
+    themeChoice->SetSelection(0);
+    StyleChoice(themeChoice, LightPalette());
+    settingsSizer->Add(themeChoice, 0, wxLEFT | wxTOP, FromDIP(10));
+    auto* showStats = new wxCheckBox(settingsPage, wxID_ANY, "Показывать статистику потока");
+    showStats->SetValue(Settings::Get("SHOW_STATS") == 1);
+    StyleCheck(showStats, LightPalette());
+    settingsSizer->Add(showStats, 0, wxLEFT | wxTOP, FromDIP(22));
+    showStats->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent& e) {
+        Settings::Set("SHOW_STATS", e.IsChecked() ? 1 : 0);
+        statsText->Show(e.IsChecked());
+        Layout();
+    });
+    auto* tray = new wxCheckBox(settingsPage, wxID_ANY, "Сворачивать в трей");
+    tray->SetValue(Settings::Get("MINIMIZE_TASKBAR") == 1);
+    StyleCheck(tray, LightPalette());
+    settingsSizer->Add(tray, 0, wxLEFT | wxTOP, FromDIP(12));
+    tray->Bind(wxEVT_CHECKBOX, [](wxCommandEvent& e) {
+        Settings::Set("MINIMIZE_TASKBAR", e.IsChecked() ? 1 : 0);
+    });
+    settingsSizer->AddStretchSpacer();
+    settingsPage->SetSizer(settingsSizer);
+
+    book->AddPage(cameraPage, "Камера", true);
+    book->AddPage(scenesPage, "Сцены");
+    book->AddPage(imagePage, "Изображение");
+    book->AddPage(effectsPage, "Эффекты");
+    book->AddPage(recordingPage, "Запись");
+    book->AddPage(devicesPage, "Устройства");
+    book->AddPage(settingsPage, "Настройки");
+
+    // Keep navigation and simplebook together.
+    body->Add(book, 1, wxEXPAND | wxALL, FromDIP(14));
+    root->SetSizer(main);
+    main->Add(body, 1, wxEXPAND);
+
+    // Theme is a real UI preference, not a fake dropdown. It immediately restyles
+    // all native controls; the video preview intentionally remains dark.
+    themeChoice->Bind(wxEVT_CHOICE, [root, book](wxCommandEvent& e) {
+        Palette p = e.GetSelection() == 1 ? DarkPalette() : LightPalette();
+        root->SetBackgroundColour(p.bg);
+        book->SetBackgroundColour(p.bg);
+        StylePanelTree(root, p);
+        root->Refresh(true);
+        root->Layout();
+    });
+
+    // Buttons with existing engine bindings must keep their original wx IDs/events.
+    devicesTop->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        wxCommandEvent e(wxEVT_BUTTON, MenuIDs::DEVICES);
+        e.SetEventObject(this);
+        ProcessWindowEvent(e);
+    });
+
+    Layout();
+    SetMinClientSize(FromDIP(wxSize(1120, 700)));
+    SetClientSize(FromDIP(wxSize(1440, 900)));
+    Center();
 }
-void Window::InitializeTopBar(wxPanel*,wxBoxSizer*){}
-void Window::InitializeCanvasPanel(wxPanel*,wxBoxSizer*){}
-void Window::InitializeBottomBar(wxPanel*,wxBoxSizer*){}
-void Window::SetConnectionStatus(bool connected,const wxString& deviceName){if(connected){statusText->SetLabel(U("●  Отлично   ")+deviceName+U("   ·   1080p60 · 8 Mbps · Wi‑Fi"));statusText->SetForegroundColour(GREEN);}else{statusText->SetLabel(U("●  Готово   Ожидание телефона   ·   Wi‑Fi"));statusText->SetForegroundColour(MUTED);}statusText->GetParent()->Layout();}
-void Window::MinimizeToTaskbar(wxIconizeEvent&e){if(Settings::Get("MINIMIZE_TASKBAR")==1){Hide();e.Skip();}}
-void Window::MaximizeFromTaskbar(wxTaskBarIconEvent&){Iconize(false);Show();Raise();SetFocus();}
-Canvas* Window::GetCanvas(){return canvas;} wxChoice* Window::GetSourceChoice(){return sourceChoice;} wxButton* Window::GetStreamOptionsButton(){return streamOptionsButton;}
-wxButton* Window::GetRotateLeftButton(){return rotateLeftButton;} wxButton* Window::GetRotateRightButton(){return rotateRightButton;} wxButton* Window::GetFlipButton(){return flipButton;} wxButton* Window::GetFlipVerticalButton(){return flipVerticalButton;}
-wxButton* Window::GetZoomInButton(){return zoomInButton;} wxButton* Window::GetZoomOutButton(){return zoomOutButton;} wxStaticText* Window::GetZoomLevelLabel(){return zoomLevelLabel;}
-wxButton* Window::GetTorchButton(){return torchButton;} wxButton* Window::GetSwapButton(){return swapButton;} wxButton* Window::GetAdjustmentsButton(){return adjustmentsButton;} wxButton* Window::GetSnapshotButton(){return snapshotButton;} wxStaticText* Window::GetStatsText(){return statsText;} wxTaskBarIcon* Window::GetTaskbarIcon(){return taskbarIcon;}
+
+Window::~Window() { delete taskbarIcon; }
+
+void Window::InitializeMenu(Server::HostInfo hostinfo)
+{
+    auto* menuBar = new wxMenuBar();
+    auto* app = new wxMenu();
+    auto* tray = app->AppendCheckItem(MenuIDs::HIDE2TRAY, "Сворачивать в трей");
+    tray->Check(Settings::Get("MINIMIZE_TASKBAR") == 1);
+    auto* stats = app->AppendCheckItem(MenuIDs::SHOWSTATS, "Показывать статистику");
+    stats->Check(Settings::Get("SHOW_STATS") == 1);
+    auto* save = app->AppendCheckItem(MenuIDs::SAVESTATE, "Сохранять настройки устройства");
+    save->Check(Settings::Get("SAVE_DEVICE_STATE") == 1);
+
+    auto* resolutions = new wxMenu();
+    resolutions->AppendRadioItem(MenuIDs::DS_SD, "640 × 480");
+    resolutions->AppendRadioItem(MenuIDs::DS_HD, "1280 × 720");
+    resolutions->AppendRadioItem(MenuIDs::DS_FHD, "1920 × 1080");
+    resolutions->AppendRadioItem(MenuIDs::DS_QHD, "3840 × 2160");
+    const auto selected = Settings::Get("DIRECTSHOW_RESOLUTION");
+    resolutions->Check((selected != -1 ? selected : 0) + MenuIDs::DS_SD, true);
+    app->AppendSubMenu(resolutions, "Разрешение виртуальной камеры");
+    app->AppendSeparator();
+    app->Append(wxID_EXIT, "Выход");
+    menuBar->Append(app, "MyCam Pro");
+
+    auto* connection = new wxMenu();
+    connection->Append(MenuIDs::QR, "QR-код подключения");
+    connection->Append(MenuIDs::DEVICES, "Устройства");
+    connection->AppendSeparator();
+    connection->Append(wxID_ANY, "Адрес: " + std::get<1>(hostinfo));
+    connection->Append(wxID_ANY, "Порт: " + std::get<2>(hostinfo));
+    menuBar->Append(connection, "Подключение");
+    SetMenuBar(menuBar);
+}
+
+void Window::InitializeHeader(wxPanel* parent, wxBoxSizer* topsizer)
+{
+    wxUnusedVar(parent);
+    wxUnusedVar(topsizer);
+}
+
+void Window::InitializeTopBar(wxPanel* parent, wxBoxSizer* topsizer)
+{
+    wxUnusedVar(parent);
+    wxUnusedVar(topsizer);
+}
+
+void Window::InitializeCanvasPanel(wxPanel* parent, wxBoxSizer* topsizer)
+{
+    wxUnusedVar(parent);
+    wxUnusedVar(topsizer);
+}
+
+void Window::InitializeBottomBar(wxPanel* parent, wxBoxSizer* topsizer)
+{
+    wxUnusedVar(parent);
+    wxUnusedVar(topsizer);
+}
+
+void Window::SetConnectionStatus(bool connected, const wxString& deviceName)
+{
+    if (!statusText) return;
+    statusText->SetLabel(connected ? wxString("●  ") + deviceName
+                                   : wxString("●  Не подключено"));
+    statusText->SetForegroundColour(connected ? LightPalette().success
+                                               : LightPalette().muted);
+    statusText->GetParent()->Layout();
+}
+
+void Window::MinimizeToTaskbar(wxIconizeEvent& evt)
+{
+    if (Settings::Get("MINIMIZE_TASKBAR") == 1) {
+        Hide();
+        evt.Skip();
+        return;
+    }
+    evt.Skip();
+}
+
+void Window::MaximizeFromTaskbar(wxTaskBarIconEvent&)
+{
+    Iconize(false);
+    Show();
+    Raise();
+    SetFocus();
+}
+
+Canvas* Window::GetCanvas() { return canvas; }
+wxChoice* Window::GetSourceChoice() { return sourceChoice; }
+wxButton* Window::GetStreamOptionsButton() { return streamOptionsButton; }
+wxButton* Window::GetRotateLeftButton() { return rotateLeftButton; }
+wxButton* Window::GetRotateRightButton() { return rotateRightButton; }
+wxButton* Window::GetFlipButton() { return flipButton; }
+wxButton* Window::GetFlipVerticalButton() { return flipVerticalButton; }
+wxButton* Window::GetZoomInButton() { return zoomInButton; }
+wxButton* Window::GetZoomOutButton() { return zoomOutButton; }
+wxStaticText* Window::GetZoomLevelLabel() { return zoomLevelLabel; }
+wxButton* Window::GetTorchButton() { return torchButton; }
+wxButton* Window::GetSwapButton() { return swapButton; }
+wxButton* Window::GetAdjustmentsButton() { return adjustmentsButton; }
+wxButton* Window::GetSnapshotButton() { return snapshotButton; }
+wxStaticText* Window::GetStatsText() { return statsText; }
+wxTaskBarIcon* Window::GetTaskbarIcon() { return taskbarIcon; }
