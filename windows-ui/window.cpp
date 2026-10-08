@@ -93,6 +93,14 @@ void SendMenu(wxWindow* host, int id, const wxString& value = wxEmptyString)
     host->ProcessWindowEvent(e);
 }
 
+void TriggerButton(wxButton* button)
+{
+    if (!button) return;
+    wxCommandEvent e(wxEVT_BUTTON, button->GetId());
+    e.SetEventObject(button);
+    button->Command(e);
+}
+
 void StyleChoice(wxChoice* c, const Palette& p)
 {
     c->SetBackgroundColour(p.surface);
@@ -388,7 +396,7 @@ Window::Window(Server::HostInfo hostinfo)
     });
 
     auto* advanced = MakeButton(right, "Расширенные параметры потока", LightPalette(), false, wxSize(260, 42));
-    advanced->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { streamOptionsButton->Command(wxEVT_BUTTON); });
+    advanced->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { TriggerButton(streamOptionsButton); });
     rr->Add(advanced, 0, wxEXPAND | wxALL, FromDIP(18));
     rr->AddStretchSpacer();
 
@@ -427,7 +435,7 @@ Window::Window(Server::HostInfo hostinfo)
     imageSizer->Add(Label(imagePage, "Коррекция цвета, экспозиции и резкости", LightPalette(), 10),
                     0, wxLEFT | wxBOTTOM, FromDIP(24));
     auto* openAdjust = MakeButton(imagePage, "Открыть редактор изображения", LightPalette(), true, wxSize(300, 48));
-    openAdjust->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { adjustmentsButton->Command(wxEVT_BUTTON); });
+    openAdjust->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { TriggerButton(adjustmentsButton); });
     imageSizer->Add(openAdjust, 0, wxLEFT | wxBOTTOM, FromDIP(20));
     for (const auto& row : std::vector<wxString>{"Экспозиция", "Контраст", "Насыщенность", "Резкость"}) {
         imageSizer->Add(Label(imagePage, row, LightPalette(), 9, true), 0, wxLEFT | wxTOP, FromDIP(20));
@@ -467,7 +475,7 @@ Window::Window(Server::HostInfo hostinfo)
     });
     recordingSizer->Add(recButton, 0, wxLEFT | wxBOTTOM, FromDIP(18));
     auto* snapshot = MakeButton(recordingPage, "Сделать снимок", LightPalette(), false, wxSize(260, 48));
-    snapshot->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { snapshotButton->Command(wxEVT_BUTTON); });
+    snapshot->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { TriggerButton(snapshotButton); });
     recordingSizer->Add(snapshot, 0, wxLEFT | wxBOTTOM, FromDIP(12));
     recordingSizer->AddStretchSpacer();
     recordingPage->SetSizer(recordingSizer);
