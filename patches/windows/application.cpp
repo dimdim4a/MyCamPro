@@ -126,11 +126,11 @@ namespace
             if (!format_) return false;
             codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
             if (!codec_) codec_ = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
-            if (!codec_) { CleanupLocked(); return false; }
+            if (!codec_) { CleanupLocked(); recording_ = false; return false; }
 
             stream_ = avformat_new_stream(format_, nullptr);
             codecCtx_ = avcodec_alloc_context3(codec_);
-            if (!stream_ || !codecCtx_) { CleanupLocked(); return false; }
+            if (!stream_ || !codecCtx_) { CleanupLocked(); recording_ = false; return false; }
 
             codecCtx_->codec_type = AVMEDIA_TYPE_VIDEO;
             codecCtx_->codec_id = codec_->id;
@@ -145,15 +145,15 @@ namespace
             if (format_->oformat->flags & AVFMT_GLOBALHEADER)
                 codecCtx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-            if (avcodec_open2(codecCtx_, codec_, nullptr) < 0) { CleanupLocked(); return false; }
+            if (avcodec_open2(codecCtx_, codec_, nullptr) < 0) { CleanupLocked(); recording_ = false; return false; }
             stream_->time_base = codecCtx_->time_base;
-            if (avcodec_parameters_from_context(stream_->codecpar, codecCtx_) < 0) { CleanupLocked(); return false; }
+            if (avcodec_parameters_from_context(stream_->codecpar, codecCtx_) < 0) { CleanupLocked(); recording_ = false; return false; }
 
             if (!(format_->oformat->flags & AVFMT_NOFILE) &&
                 avio_open(&format_->pb, path_.c_str(), AVIO_FLAG_WRITE) < 0) {
-                CleanupLocked(); return false;
+                CleanupLocked(); recording_ = false; return false;
             }
-            if (avformat_write_header(format_, nullptr) < 0) { CleanupLocked(); return false; }
+            if (avformat_write_header(format_, nullptr) < 0) { CleanupLocked(); recording_ = false; return false; }
             frameIndex_ = 0;
             recording_ = true;
             return true;
@@ -1069,6 +1069,7 @@ void Application::OnWindowCloseEvent(wxCloseEvent& event)
 	// Hide window for responsive UI close feeling
 	mainWindow->Hide();
 
+	g_recorder.Stop();
 	rtspManager.reset();
 	server->Close();
 
