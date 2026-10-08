@@ -243,7 +243,7 @@ Application::Application()
 	#endif
 	wxInitAllImageHandlers();
 
-	SetAppName("Nexora");
+	SetAppName("MyCam Pro");
 	
 	Settings::Load();
 	stateRegistry = Settings::GetDeviceStates();
