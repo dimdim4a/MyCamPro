@@ -3,7 +3,7 @@ name: Build MyCam Pro
 
 on:
   push:
-    branches: [main, prototype/p0-core]
+    branches: [main, prototype/p0-core, fix/real-mycamp-ui-runtime]
   pull_request:
   workflow_dispatch:
 
