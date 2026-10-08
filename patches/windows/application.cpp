@@ -939,11 +939,78 @@ void Application::OnMenuEvent(wxCommandEvent& event)
 
 		case Window::MenuIDs::SAVESTATE:
 		{
-			Settings::Set("SAVE_DEVICE_STATES", event.IsChecked() ? 1 : 0);
+			Settings::Set("SAVE_DEVICE_STATE", event.IsChecked() ? 1 : 0);
 			break;
 		}
 
-		case Window::MenuIDs::DS_SD:
+		        case 200:
+        {
+            if (rtspManager->GetStreamingDevice() < 0) return;
+            if (g_recorder.IsRecording()) {
+                g_recorder.Stop();
+                const int id = rtspManager->GetStreamingDevice();
+                mainWindow->SetConnectionStatus(true, wxString::FromUTF8(rtspManager->GetDescriptors()[id].name().c_str()));
+            } else {
+                const int id = rtspManager->GetStreamingDevice();
+                const auto& desc = rtspManager->GetDescriptors()[id];
+                const int fps = stateRegistry[desc.name()].fps;
+                if (!g_recorder.Start(fps))
+                    wxMessageBox("Не удалось начать запись видео.", "MyCam Pro", wxOK | wxICON_ERROR, mainWindow);
+                else
+                    mainWindow->SetConnectionStatus(true, "●  Идёт запись");
+            }
+            break;
+        }
+
+        case 201:
+        case 202:
+        case 203:
+        case 204:
+        case 205:
+        case 206:
+        case 210:
+        case 211:
+        case 212:
+        case 213:
+        {
+            if (rtspManager->GetStreamingDevice() < 0) return;
+            const int id = rtspManager->GetStreamingDevice();
+            const auto& desc = rtspManager->GetDescriptors()[id];
+            auto& state = stateRegistry[desc.name()];
+            const wxString value = event.GetString();
+
+            if (event.GetId() == 201) {
+                if (value.StartsWith("1920")) { state.resolution = {1920,1080}; rtspManager->SetResolution(1920,1080); }
+                else if (value.StartsWith("1280")) { state.resolution = {1280,720}; rtspManager->SetResolution(1280,720); }
+                else { state.resolution = {640,480}; rtspManager->SetResolution(640,480); }
+            } else if (event.GetId() == 202) {
+                long fps = 30; value.BeforeFirst(' ').ToLong(&fps);
+                state.fps = static_cast<int>(fps); rtspManager->SetFPS(static_cast<int>(fps));
+            } else if (event.GetId() == 203) {
+                long mbps = 8; value.BeforeFirst(' ').ToLong(&mbps);
+                state.bitrate = static_cast<int>(mbps * 1000000); state.adaptiveBitrate = false;
+                rtspManager->SetBitrate(state.bitrate);
+            } else if (event.GetId() == 204) {
+                state.focusMode = value.StartsWith("Непрерывный") ? 1 : (value.StartsWith("Фиксированный") ? 2 : 0);
+                rtspManager->SetFocusMode(state.focusMode);
+            } else if (event.GetId() == 205) {
+                state.stabilizationEnabled = value == "1"; rtspManager->SetStabilization(state.stabilizationEnabled);
+            } else if (event.GetId() == 206) {
+                state.h265Enabled = value == "1"; rtspManager->SetH265Codec(state.h265Enabled);
+            } else {
+                int width = 1920, height = 1080, fps = 60, bitrate = 8000000;
+                if (event.GetId() == 211) { fps = 30; bitrate = 6000000; }
+                if (event.GetId() == 212) { width = 1280; height = 720; fps = 30; bitrate = 4000000; }
+                if (event.GetId() == 213) { width = 1280; height = 720; fps = 24; bitrate = 4000000; }
+                state.resolution = {width,height}; state.fps = fps; state.bitrate = bitrate; state.adaptiveBitrate = false;
+                rtspManager->SetResolution(static_cast<unsigned short>(width), static_cast<unsigned short>(height));
+                rtspManager->SetFPS(fps);
+                rtspManager->SetBitrate(bitrate);
+            }
+            break;
+        }
+
+case Window::MenuIDs::DS_SD:
 		case Window::MenuIDs::DS_HD:
 		case Window::MenuIDs::DS_FHD:
 		case Window::MenuIDs::DS_QHD:
